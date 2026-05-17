@@ -1,0 +1,11 @@
+# python
+.venv
+.env
+.ruff_cache
+*.egg-info
+__pycache__
+.pytest_cache
+.ipynb_checkpoints
+
+backtest_experiments
+bak

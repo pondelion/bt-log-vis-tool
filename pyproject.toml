@@ -1,0 +1,52 @@
+[project]
+name = "bt-log-vis-tool"
+version = "0.1.0"
+description = "Backtest Log Visualization Tool - バックテスト実験管理・可視化ツール"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pandas>=2.0.0",
+    "pyarrow>=14.0.0",
+    "pyyaml>=6.0",
+    "streamlit>=1.28.0",
+    "plotly>=5.17.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+btlog-dashboard = "bt_log_vis_tool.app:main"
+
+[tool.setuptools.packages.find]
+include = ['bt_log_vis_tool']
+
+[tool.ruff]
+lint.select = [
+    "F", # Flake8
+    "B", # Black
+    "I", # isort
+    "E", # error
+    "W",  # warning
+    "UP",
+]
+lint.ignore = []
+lint.fixable = ["ALL"]
+exclude = [
+    ".ruff_cache",
+    ".venv"
+]
+line-length = 300
+indent-width = 4
+target-version = "py312"
+
+[tool.ruff.format]
+quote-style = "single"
+
+[tool.pytest.ini_options]
+log_cli = true
+log_cli_level = "INFO"
