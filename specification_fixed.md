@@ -13,7 +13,7 @@
 | `run_name` | 同一ノートブック内の各試行の名前 |
 | `split` | データ分割区分。`train` / `val` / `test` の3種 |
 | `epoch` | 学習エポック番号（整数） |
-| `strategy_name` | 戦略名（例: `longshort`, `long_only`） |
+| `strategy_name` | 戦略名（例: `longshort`, `long_only`）。ベンチマーク系列（buy&hold等、モデル予測に依存しない参照系列）は `bm_` プレフィックスを付ける（例: `bm_buy_and_hold`） |
 | `ticker` | 銘柄コード |
 | `non_metric_columns` | 統計メトリクスDFにおける条件カラム（メトリック以外） |
 
@@ -57,8 +57,9 @@
 時系列データは3種類あり、それぞれ独立した parquet ファイルに保存する。
 **共通ルール:**
 - index: `DatetimeIndex`
-- `pnl` / `pred` / `position` 以外のカラムはすべて「条件カラム」として扱う
+- `pnl` / `pred` / `position` / `pnl_abs` 以外のカラムはすべて「条件カラム」として扱う
 - 条件カラムの組み合わせでgroupbyしたとき、index（日時）が一意になること（バリデーションあり）
+- `pnl` は率（リターン）、`pnl_abs` は絶対損益（価格差分の合算値。通貨単位はデータ依存でtool側は関知しない）。両方保存してもよい
 
 #### 2.1.1. 銘柄別時系列 `pnl_pred_position/ticker` *(optional)*
 
@@ -69,22 +70,23 @@
 | `split` | ✅ | `train` / `val` / `test` |
 | `epoch` | ✅ | エポック番号 |
 | `ticker` | ✅ | 銘柄コード |
-| `pnl` | ※1 | 損益 |
+| `pnl` | ※1 | 損益（率） |
 | `pred` | ※1 | 予測値 |
 | `position` | ※1 | ポジション |
+| `pnl_abs` | ※1 | 絶対損益（価格差分。1単位保有等、実験側が定義した数量ベース） |
 | その他 | - | random_seed 等、任意の条件カラム |
 
-※1: `pnl` / `pred` / `position` のうち最低1つは必須
+※1: `pnl` / `pred` / `position` / `pnl_abs` のうち最低1つは必須
 
 ```python
 # DataFrame フォーマット例
 #   index: DatetimeIndex
 #   条件カラムの組み合わせ (split, epoch, ticker) ごとに日時が一意
 
-            split  epoch ticker      pnl     pred  position
-2023-01-01  train      0   AAPL   0.005    0.312         1
-2023-01-02  train      0   AAPL  -0.002   -0.105         0
-2023-01-01  train      0  GOOGL   0.003    0.198         1
+            split  epoch ticker      pnl     pred  position  pnl_abs
+2023-01-01  train      0   AAPL   0.005    0.312         1     0.85
+2023-01-02  train      0   AAPL  -0.002   -0.105         0     0.00
+2023-01-01  train      0  GOOGL   0.003    0.198         1     4.20
 ...
 ```
 
@@ -96,12 +98,13 @@
 |---|---|---|
 | `split` | ✅ | `train` / `val` / `test` |
 | `epoch` | ✅ | エポック番号 |
-| `pnl` | ※1 | 損益 |
+| `pnl` | ※1 | 損益（率） |
 | `pred` | ※1 | 予測値 |
 | `position` | ※1 | ポジション |
+| `pnl_abs` | ※1 | 絶対損益 |
 | その他 | - | `model_id`, `random_seed` 等、任意の条件カラム |
 
-※1: `pnl` / `pred` / `position` のうち最低1つは必須
+※1: `pnl` / `pred` / `position` / `pnl_abs` のうち最低1つは必須
 
 ```python
 # DataFrame フォーマット例
@@ -124,19 +127,20 @@ longshort ポートフォリオ・シードアンサンブル等の戦略ごと�
 | `split` | ✅ | `train` / `val` / `test` |
 | `epoch` | ✅ | エポック番号 |
 | `strategy_name` | ✅ | 戦略名 |
-| `pnl` | ✅ | 損益 |
+| `pnl` | ✅ | 損益（率） |
 | `pred` | - | 予測値 |
 | `position` | - | ポジション |
+| `pnl_abs` | - | 絶対損益（各銘柄の絶対損益を集計した値） |
 | その他 | - | 任意の条件カラム |
 
 ```python
 # DataFrame フォーマット例
 #   条件カラムの組み合わせ (split, epoch, strategy_name) ごとに日時が一意
 
-            split  epoch strategy_name      pnl     pred  position
-2023-01-01  train      0     longshort   0.010    0.123         1
-2023-01-02  train      0     longshort   0.005   -0.045         0
-2023-01-01  train      0     long_only   0.007    0.089         1
+            split  epoch strategy_name      pnl     pred  position  pnl_abs
+2023-01-01  train      0     longshort   0.010    0.123         1     12.5
+2023-01-02  train      0     longshort   0.005   -0.045         0      6.1
+2023-01-01  train      0     long_only   0.007    0.089         1      8.9
 ...
 ```
 
@@ -297,6 +301,7 @@ Streamlit による Web ダッシュボード。`exp_name` × `run_name` の組�
 - split はチェックボックスで表示/非表示を選択（デフォルト: 全選択）
 - 各 strategy_name は同一グラフ内に複数トレースとして描画
 - ベンチマーク戦略はセレクトボックスで選択可能（選択なし可）。選択された系列は赤色・太線で強調表示
+  - デフォルト選択: `strategy_name` が `bm_` で始まる戦略のうち最初のもの（存在しない場合は選択なし）
 - ベストエポックの位置に破線縦線を表示
 
 #### 表
@@ -304,7 +309,7 @@ Streamlit による Web ダッシュボード。`exp_name` × `run_name` の組�
 - **describe() などの集計ではなく生データを表示**
 - index: epoch（重複なし）
 - split ごとに別テーブルとして横並びに表示（チェックボックスで選択可能、デフォルト: 全選択）
-- カラム: `{メトリクス名}_{strategy_name}` の形式で横持ちに整形（unstackに相当）
+- 各split列内では、strategy_name毎にさらに別テーブルとして縦に並べる（横持ち化はしない。カラムはmetric_colsそのまま）
 
 ---
 
@@ -314,7 +319,8 @@ Streamlit による Web ダッシュボード。`exp_name` × `run_name` の組�
 - split チェックボックス（横並び、デフォルト: 全選択）
 - 選択エポックのデータを split ごとに横並びグラフで表示
 - 表示する値:
-  - 累積 PnL（`pnl` が存在する場合）
+  - 累積リターン（`pnl` が存在する場合）
+  - 累積損益・絶対値（`pnl_abs` が存在する場合）
   - ポジション時系列（`position` が存在する場合）
   - 予測値時系列（`pred` が存在する場合）
 - 各グラフ内で strategy_name を色分けして重ねて表示
@@ -328,7 +334,8 @@ Streamlit による Web ダッシュボード。`exp_name` × `run_name` の組�
 - split チェックボックス（横並び、デフォルト: 全選択）
 - ticker マルチセレクト（デフォルト: 全選択）
 - 表示する値:
-  - 累積 PnL（`pnl` が存在する場合）
+  - 累積リターン（`pnl` が存在する場合）
+  - 累積損益・絶対値（`pnl_abs` が存在する場合）
   - ポジション時系列（`position` が存在する場合）
   - 予測値時系列（`pred` が存在する場合）
 - 各グラフ内で選択 ticker を色分けして重ねて表示、split ごとに横並び

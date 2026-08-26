@@ -10,8 +10,8 @@ import pandas as pd
 from bt_log_vis_tool import ExperimentSaver
 
 # 設定
-BASE_DIR = "./backtest_experiments"
-EXP_NAME = "mock_experiment_with_ticker"
+BASE_DIR = "./backtest_experiments/results"
+EXP_NAME = "demo_momentum_strategy_with_ticker"
 RUN_NAME = "run_001"
 
 # サンプルデータの作成

@@ -143,8 +143,6 @@ streamlit run bt_log_vis_tool/app.py
 [examples/](examples/) ディレクトリにサンプルコードがあります:
 
 - [example_save.py](examples/example_save.py): Pythonスクリプト例
-- [example_notebook.ipynb](examples/example_notebook.ipynb): Jupyter Notebook例
-
 実行例:
 
 ```bash
@@ -169,11 +167,3 @@ pytest
 ruff check .
 ruff format .
 ```
-
-## ライセンス
-
-MIT License
-
-## 作者
-
-バックテスト実験の効率的な管理・可視化を目指して開発されました。

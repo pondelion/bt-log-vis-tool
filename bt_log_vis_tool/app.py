@@ -12,6 +12,15 @@ import streamlit as st
 from bt_log_vis_tool.loader import ExperimentLoader
 from bt_log_vis_tool.utils import calculate_cumulative_pnl, filter_by_conditions
 
+SPLIT_ORDER = ["train", "val", "test"]
+
+
+def sort_splits(splits: list[str]) -> list[str]:
+    """splitをtrain/val/testの順に並べる（未知のsplit値はアルファベット順で末尾に追加）"""
+    known = [s for s in SPLIT_ORDER if s in splits]
+    unknown = sorted(s for s in splits if s not in SPLIT_ORDER)
+    return known + unknown
+
 
 def main():
     """メイン関数"""
@@ -25,7 +34,7 @@ def main():
         base_dir = st.text_input(
             "ベースディレクトリ",
             # value=str(Path.home() / "backtest_experiments"),
-            value=str(Path('.') / "backtest_experiments"),
+            value=str(Path('.') / "backtest_experiments/results"),
             help="実験データが保存されているディレクトリ",
         )
 
@@ -103,7 +112,7 @@ def _setup_best_epoch_sidebar(loader: ExperimentLoader) -> int | None:
         metric_cols = [c for c in stats_df.columns if c not in non_metric_columns]
 
     has_strategy = "strategy_name" in non_metric_columns and "strategy_name" in stats_df.columns
-    splits = sorted(stats_df["split"].unique().tolist()) if "split" in stats_df.columns else []
+    splits = sort_splits(stats_df["split"].unique().tolist()) if "split" in stats_df.columns else []
     strategies = sorted(stats_df["strategy_name"].unique().tolist()) if has_strategy else []
 
     if not splits or not metric_cols:
@@ -113,7 +122,7 @@ def _setup_best_epoch_sidebar(loader: ExperimentLoader) -> int | None:
         st.markdown("---")
         st.subheader("ベストエポック判定設定")
 
-        default_split_idx = splits.index("test") if "test" in splits else 0
+        default_split_idx = splits.index("val") if "val" in splits else 0
         best_split = st.selectbox("判定 split", splits, index=default_split_idx, key="best_split")
 
         sharpe_cols = [c for c in metric_cols if "sharpe" in c.lower()]
@@ -123,7 +132,8 @@ def _setup_best_epoch_sidebar(loader: ExperimentLoader) -> int | None:
         )
 
         if has_strategy:
-            best_strategy = st.selectbox("判定 strategy", strategies, key="best_strategy")
+            default_strategy_idx = strategies.index("long_short") if "long_short" in strategies else 0
+            best_strategy = st.selectbox("判定 strategy", strategies, index=default_strategy_idx, key="best_strategy")
         else:
             best_strategy = None
 
@@ -170,7 +180,7 @@ def render_stats_tab(loader: ExperimentLoader, best_epoch: int | None):
         stats_df = stats_df.reset_index(drop="epoch" in stats_df.columns)
 
     has_strategy = "strategy_name" in non_metric_columns and "strategy_name" in stats_df.columns
-    splits = sorted(stats_df["split"].unique().tolist()) if "split" in stats_df.columns else []
+    splits = sort_splits(stats_df["split"].unique().tolist()) if "split" in stats_df.columns else []
     strategies = sorted(stats_df["strategy_name"].unique().tolist()) if has_strategy else []
 
     if not splits:
@@ -197,15 +207,78 @@ def render_stats_tab(loader: ExperimentLoader, best_epoch: int | None):
     benchmark_strategy = None
     if has_strategy:
         benchmark_options = ["(なし)"] + strategies
-        default_bm_idx = next(
-            (i + 1 for i, s in enumerate(strategies) if any(k in s.lower() for k in ["buy", "hold", "benchmark"])),
-            0,
-        )
+        default_bm_idx = next((i + 1 for i, s in enumerate(strategies) if s.startswith("bm_")), 0)
         benchmark_strategy_sel = st.selectbox(
             "ベンチマーク戦略（赤色強調）", benchmark_options, index=default_bm_idx, key="stats_benchmark"
         )
         if benchmark_strategy_sel != "(なし)":
             benchmark_strategy = benchmark_strategy_sel
+
+    # === グラフ表示（メトリック毎に縦並び、split毎に横並び） ===
+    st.markdown("### エポック推移グラフ")
+
+    if "epoch" not in stats_df.columns:
+        st.info("epoch列がないためグラフを表示できません")
+    else:
+        colors = px.colors.qualitative.Plotly
+
+        for metric in metric_cols:
+            st.markdown(f"#### {metric}")
+            graph_cols_ui = st.columns(len(selected_splits))
+
+            for i, split in enumerate(selected_splits):
+                with graph_cols_ui[i]:
+                    split_data = filter_by_conditions(stats_df, split=split)
+                    fig = go.Figure()
+
+                    if has_strategy:
+                        for j, strategy in enumerate(strategies):
+                            strat_data = filter_by_conditions(split_data, strategy_name=strategy)
+                            if len(strat_data) == 0 or metric not in strat_data.columns:
+                                continue
+                            epoch_agg = strat_data.groupby("epoch")[metric].mean().reset_index()
+                            is_bm = strategy == benchmark_strategy
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=epoch_agg["epoch"],
+                                    y=epoch_agg[metric],
+                                    mode="lines+markers",
+                                    name=strategy,
+                                    line=dict(
+                                        color="red" if is_bm else colors[j % len(colors)],
+                                        width=3 if is_bm else 1.5,
+                                    ),
+                                )
+                            )
+                    else:
+                        if metric in split_data.columns:
+                            epoch_agg = split_data.groupby("epoch")[metric].mean().reset_index()
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=epoch_agg["epoch"],
+                                    y=epoch_agg[metric],
+                                    mode="lines+markers",
+                                    name=metric,
+                                )
+                            )
+
+                    if best_epoch is not None:
+                        fig.add_vline(
+                            x=best_epoch,
+                            line_dash="dash",
+                            line_color="gray",
+                            annotation_text=f"best:{best_epoch}",
+                        )
+
+                    fig.update_layout(
+                        title=f"{metric} ({split})",
+                        xaxis_title="epoch",
+                        yaxis_title=metric,
+                        hovermode="x unified",
+                        height=350,
+                        margin=dict(t=40, b=40),
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
 
     # === テーブル表示（生データ、split横並び） ===
     st.markdown("### 統計メトリクス表")
@@ -219,87 +292,17 @@ def render_stats_tab(loader: ExperimentLoader, best_epoch: int | None):
                 continue
 
             if has_strategy and "epoch" in split_data.columns:
-                # {メトリクス名}_{strategy_name} の横持ちテーブル
-                pivot_df = split_data.pivot_table(
-                    index="epoch",
-                    columns="strategy_name",
-                    values=metric_cols,
-                    aggfunc="mean",
-                )
-                pivot_df.columns = [f"{m}_{s}" for m, s in pivot_df.columns]
-                pivot_df.index.name = "epoch"
-                st.dataframe(pivot_df, use_container_width=True)
+                # strategy_name毎に別テーブルとして縦に並べる
+                for strategy in strategies:
+                    strategy_data = filter_by_conditions(split_data, strategy_name=strategy)
+                    if len(strategy_data) == 0:
+                        continue
+                    st.markdown(f"*{strategy}*")
+                    st.dataframe(strategy_data.set_index("epoch")[metric_cols], use_container_width=True)
             elif "epoch" in split_data.columns:
                 st.dataframe(split_data.set_index("epoch")[metric_cols], use_container_width=True)
             else:
                 st.dataframe(split_data[metric_cols], use_container_width=True)
-
-    # === グラフ表示（メトリック毎に縦並び、split毎に横並び） ===
-    st.markdown("### エポック推移グラフ")
-
-    if "epoch" not in stats_df.columns:
-        st.info("epoch列がないためグラフを表示できません")
-        return
-
-    colors = px.colors.qualitative.Plotly
-
-    for metric in metric_cols:
-        st.markdown(f"#### {metric}")
-        graph_cols_ui = st.columns(len(selected_splits))
-
-        for i, split in enumerate(selected_splits):
-            with graph_cols_ui[i]:
-                split_data = filter_by_conditions(stats_df, split=split)
-                fig = go.Figure()
-
-                if has_strategy:
-                    for j, strategy in enumerate(strategies):
-                        strat_data = filter_by_conditions(split_data, strategy_name=strategy)
-                        if len(strat_data) == 0 or metric not in strat_data.columns:
-                            continue
-                        epoch_agg = strat_data.groupby("epoch")[metric].mean().reset_index()
-                        is_bm = strategy == benchmark_strategy
-                        fig.add_trace(
-                            go.Scatter(
-                                x=epoch_agg["epoch"],
-                                y=epoch_agg[metric],
-                                mode="lines+markers",
-                                name=strategy,
-                                line=dict(
-                                    color="red" if is_bm else colors[j % len(colors)],
-                                    width=3 if is_bm else 1.5,
-                                ),
-                            )
-                        )
-                else:
-                    if metric in split_data.columns:
-                        epoch_agg = split_data.groupby("epoch")[metric].mean().reset_index()
-                        fig.add_trace(
-                            go.Scatter(
-                                x=epoch_agg["epoch"],
-                                y=epoch_agg[metric],
-                                mode="lines+markers",
-                                name=metric,
-                            )
-                        )
-
-                if best_epoch is not None:
-                    fig.add_vline(
-                        x=best_epoch,
-                        line_dash="dash",
-                        line_color="gray",
-                        annotation_text=f"best:{best_epoch}",
-                    )
-
-                fig.update_layout(
-                    title=f"{metric} ({split})",
-                    xaxis_title="epoch",
-                    yaxis_title=metric,
-                    hovermode="x unified",
-                    height=350,
-                    margin=dict(t=40, b=40),
-                )
-                st.plotly_chart(fig, use_container_width=True)
 
 
 def render_timeseries_tab(loader: ExperimentLoader, best_epoch: int | None):
@@ -329,7 +332,8 @@ def render_timeseries_tab(loader: ExperimentLoader, best_epoch: int | None):
 
     if available_epochs:
         default_idx = available_epochs.index(best_epoch) if best_epoch in available_epochs else 0
-        epoch = st.selectbox("表示エポック", available_epochs, index=default_idx)
+        epoch_label = f"表示エポック (ベストエポック: {best_epoch})" if best_epoch is not None else "表示エポック"
+        epoch = st.selectbox(epoch_label, available_epochs, index=default_idx)
     else:
         epoch = None
 
@@ -345,22 +349,30 @@ def render_timeseries_tab(loader: ExperimentLoader, best_epoch: int | None):
 
     # 資産曲線の描画
     if "pnl" in value_columns:
-        st.markdown("### 資産曲線（累積PnL）")
+        st.markdown("### 資産曲線（累積リターン）")
         render_equity_curve(epoch_data, epoch, condition_columns)
+
+    # 絶対損益の描画
+    if "pnl_abs" in value_columns:
+        st.markdown("### 資産曲線（累積損益・絶対値）")
+        render_equity_curve(epoch_data, epoch, condition_columns, pnl_column="pnl_abs", chart_title="累積損益(絶対値)")
 
     # ポジションの描画
     if "position" in value_columns:
         st.markdown("### ポジション時系列")
-        render_position(epoch_data, epoch, condition_columns)
+        pos_cumsum = st.checkbox("cumsum表示", value=True, key="strategy_pos_cumsum")
+        render_position(epoch_data, epoch, condition_columns, cumsum=pos_cumsum)
 
 
-def render_equity_curve(df, epoch, condition_columns):
-    """資産曲線を描画
+def render_equity_curve(df, epoch, condition_columns, pnl_column: str = "pnl", chart_title: str = "累積PnL"):
+    """資産曲線を描画（split毎に列を分けてy軸スケールを独立させる）
 
     Args:
         df: データフレーム
         epoch: 選択されたエポック
         condition_columns: 条件カラムのリスト
+        pnl_column: 累積対象のカラム名（"pnl"=率、"pnl_abs"=絶対損益）
+        chart_title: グラフタイトルに使う名称
     """
     if "strategy_name" not in condition_columns:
         st.warning("strategy_nameカラムが見つかりません")
@@ -368,48 +380,43 @@ def render_equity_curve(df, epoch, condition_columns):
 
     # strategy_name毎にグループ化
     strategies = df["strategy_name"].unique()
-    splits = df["split"].unique() if "split" in df.columns else ["all"]
-
-    fig = go.Figure()
+    splits = sort_splits(df["split"].unique().tolist()) if "split" in df.columns else ["all"]
     colors = px.colors.qualitative.Plotly
 
-    for i, split in enumerate(splits):
+    columns = st.columns(len(splits))
+    for col, split in zip(columns, splits):
         split_data = filter_by_conditions(df, split=split) if "split" in df.columns else df
 
-        for strategy in strategies:
+        fig = go.Figure()
+        for j, strategy in enumerate(strategies):
             strategy_data = filter_by_conditions(split_data, strategy_name=strategy)
 
-            if len(strategy_data) > 0 and "pnl" in strategy_data.columns:
-                cum_pnl = calculate_cumulative_pnl(strategy_data["pnl"])
+            if len(strategy_data) > 0 and pnl_column in strategy_data.columns:
+                cum_pnl = calculate_cumulative_pnl(strategy_data[pnl_column])
 
                 fig.add_trace(
                     go.Scatter(
                         x=strategy_data.index,
                         y=cum_pnl,
                         mode="lines",
-                        name=f"{strategy} ({split})",
-                        line=dict(color=colors[i % len(colors)]),
+                        name=strategy,
+                        line=dict(color=colors[j % len(colors)]),
                     )
                 )
 
-    fig.update_layout(
-        title=f"累積PnL - エポック {epoch}",
-        xaxis_title="日時",
-        yaxis_title="累積PnL",
-        hovermode="x unified",
-    )
+        fig.update_layout(
+            title=f"{chart_title} ({split}) - エポック {epoch}",
+            xaxis_title="日時",
+            yaxis_title=chart_title,
+            hovermode="x unified",
+        )
 
-    st.plotly_chart(fig, use_container_width=True)
+        with col:
+            st.plotly_chart(fig, use_container_width=True)
 
 
-def render_position(df, epoch, condition_columns):
-    """ポジション時系列を描画
-
-    Args:
-        df: データフレーム
-        epoch: 選択されたエポック
-        condition_columns: 条件カラムのリスト
-    """
+def render_position(df, epoch, condition_columns, cumsum: bool = False):
+    """ポジション時系列を描画（split毎に列を分けてy軸スケールを独立させる）"""
     if "strategy_name" not in condition_columns:
         st.warning("strategy_nameカラムが見つかりません")
         return
@@ -418,38 +425,70 @@ def render_position(df, epoch, condition_columns):
         st.info("positionカラムが存在しません")
         return
 
-    # strategy_name毎にグループ化
     strategies = df["strategy_name"].unique()
-    splits = df["split"].unique() if "split" in df.columns else ["all"]
-
-    fig = go.Figure()
+    splits = sort_splits(df["split"].unique().tolist()) if "split" in df.columns else ["all"]
     colors = px.colors.qualitative.Plotly
+    ylabel = "ポジション累積" if cumsum else "ポジション"
 
-    for i, split in enumerate(splits):
+    columns = st.columns(len(splits))
+    for col, split in zip(columns, splits):
         split_data = filter_by_conditions(df, split=split) if "split" in df.columns else df
 
-        for strategy in strategies:
+        fig = go.Figure()
+        for j, strategy in enumerate(strategies):
             strategy_data = filter_by_conditions(split_data, strategy_name=strategy)
 
             if len(strategy_data) > 0:
+                y = strategy_data["position"].cumsum() if cumsum else strategy_data["position"]
                 fig.add_trace(
                     go.Scatter(
                         x=strategy_data.index,
-                        y=strategy_data["position"],
+                        y=y,
                         mode="lines",
-                        name=f"{strategy} ({split})",
-                        line=dict(color=colors[i % len(colors)]),
+                        name=strategy,
+                        line=dict(color=colors[j % len(colors)]),
                     )
                 )
 
-    fig.update_layout(
-        title=f"ポジション - エポック {epoch}",
-        xaxis_title="日時",
-        yaxis_title="ポジション",
-        hovermode="x unified",
-    )
+        fig.update_layout(
+            title=f"{ylabel} ({split}) - エポック {epoch}",
+            xaxis_title="日時",
+            yaxis_title=ylabel,
+            hovermode="x unified",
+        )
 
-    st.plotly_chart(fig, use_container_width=True)
+        with col:
+            st.plotly_chart(fig, use_container_width=True)
+
+
+def render_ticker_equity_curve(epoch_df, display_splits, selected_tickers, colors, pnl_column: str = "pnl", chart_title: str = "累積PnL"):
+    """銘柄別の累積損益曲線を描画（split毎に列を分ける）"""
+    graph_cols = st.columns(len(display_splits))
+    for i, split in enumerate(display_splits):
+        with graph_cols[i]:
+            split_df = filter_by_conditions(epoch_df, split=split) if split else epoch_df
+            fig = go.Figure()
+            for j, ticker in enumerate(selected_tickers):
+                t_df = filter_by_conditions(split_df, ticker=ticker)
+                if len(t_df) == 0 or pnl_column not in t_df.columns:
+                    continue
+                cum_pnl = calculate_cumulative_pnl(t_df[pnl_column])
+                fig.add_trace(go.Scatter(
+                    x=t_df.index,
+                    y=cum_pnl,
+                    mode="lines",
+                    name=ticker,
+                    line=dict(color=colors[j % len(colors)]),
+                ))
+            fig.update_layout(
+                title=f"{chart_title} ({split})" if split else chart_title,
+                xaxis_title="日時",
+                yaxis_title=chart_title,
+                hovermode="x unified",
+                height=400,
+                margin=dict(t=40, b=40),
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
 
 def render_ticker_tab(loader: ExperimentLoader, best_epoch: int | None):
@@ -473,7 +512,8 @@ def render_ticker_tab(loader: ExperimentLoader, best_epoch: int | None):
     if "epoch" in condition_columns:
         available_epochs = sorted(ticker_df["epoch"].unique().tolist())
         default_idx = available_epochs.index(best_epoch) if best_epoch in available_epochs else 0
-        epoch = st.selectbox("表示エポック", available_epochs, index=default_idx, key="ticker_epoch")
+        epoch_label = f"表示エポック (ベストエポック: {best_epoch})" if best_epoch is not None else "表示エポック"
+        epoch = st.selectbox(epoch_label, available_epochs, index=default_idx, key="ticker_epoch")
         epoch_df = filter_by_conditions(ticker_df, epoch=epoch)
     else:
         epoch_df = ticker_df.copy()
@@ -484,7 +524,7 @@ def render_ticker_tab(loader: ExperimentLoader, best_epoch: int | None):
         return
 
     # Split チェックボックス（横並び）
-    splits = sorted(epoch_df["split"].unique().tolist()) if "split" in epoch_df.columns else []
+    splits = sort_splits(epoch_df["split"].unique().tolist()) if "split" in epoch_df.columns else []
     selected_splits = []
     if splits:
         st.markdown("**表示するSplit:**")
@@ -514,39 +554,20 @@ def render_ticker_tab(loader: ExperimentLoader, best_epoch: int | None):
     colors = px.colors.qualitative.Plotly
     display_splits = selected_splits if selected_splits else [None]
 
-    # === 資産曲線（累積PnL）===
+    # === 資産曲線（累積リターン）===
     if "pnl" in value_columns:
-        st.markdown("### 資産曲線（累積PnL）")
-        graph_cols = st.columns(len(display_splits))
-        for i, split in enumerate(display_splits):
-            with graph_cols[i]:
-                split_df = filter_by_conditions(epoch_df, split=split) if split else epoch_df
-                fig = go.Figure()
-                for j, ticker in enumerate(selected_tickers):
-                    t_df = filter_by_conditions(split_df, ticker=ticker)
-                    if len(t_df) == 0:
-                        continue
-                    cum_pnl = calculate_cumulative_pnl(t_df["pnl"])
-                    fig.add_trace(go.Scatter(
-                        x=t_df.index,
-                        y=cum_pnl,
-                        mode="lines",
-                        name=ticker,
-                        line=dict(color=colors[j % len(colors)]),
-                    ))
-                fig.update_layout(
-                    title=f"累積PnL ({split})" if split else "累積PnL",
-                    xaxis_title="日時",
-                    yaxis_title="累積PnL",
-                    hovermode="x unified",
-                    height=400,
-                    margin=dict(t=40, b=40),
-                )
-                st.plotly_chart(fig, use_container_width=True)
+        st.markdown("### 資産曲線（累積リターン）")
+        render_ticker_equity_curve(epoch_df, display_splits, selected_tickers, colors)
+
+    # === 絶対損益 ===
+    if "pnl_abs" in value_columns:
+        st.markdown("### 資産曲線（累積損益・絶対値）")
+        render_ticker_equity_curve(epoch_df, display_splits, selected_tickers, colors, pnl_column="pnl_abs", chart_title="累積損益(絶対値)")
 
     # === ポジション ===
     if "position" in value_columns:
         st.markdown("### ポジション時系列")
+        ticker_pos_cumsum = st.checkbox("cumsum表示", value=True, key="ticker_pos_cumsum")
         graph_cols = st.columns(len(display_splits))
         for i, split in enumerate(display_splits):
             with graph_cols[i]:
@@ -558,15 +579,17 @@ def render_ticker_tab(loader: ExperimentLoader, best_epoch: int | None):
                         continue
                     fig.add_trace(go.Scatter(
                         x=t_df.index,
-                        y=t_df["position"],
+                        y=t_df["position"].cumsum() if ticker_pos_cumsum else t_df["position"],
                         mode="lines",
                         name=ticker,
                         line=dict(color=colors[j % len(colors)]),
                     ))
+                pos_ylabel = "ポジション累積" if ticker_pos_cumsum else "ポジション"
+                pos_title = f"{pos_ylabel} ({split})" if split else pos_ylabel
                 fig.update_layout(
-                    title=f"ポジション ({split})" if split else "ポジション",
+                    title=pos_title,
                     xaxis_title="日時",
-                    yaxis_title="ポジション",
+                    yaxis_title=pos_ylabel,
                     hovermode="x unified",
                     height=400,
                     margin=dict(t=40, b=40),

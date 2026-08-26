@@ -26,6 +26,7 @@ class ExperimentSaver:
     PNL_COLUMN = "pnl"
     PRED_COLUMN = "pred"
     POSITION_COLUMN = "position"
+    PNL_ABS_COLUMN = "pnl_abs"  # 絶対損益（通貨単位そのまま。pnlが率であるのに対し、こちらは価格差分の合算値）
 
     # 必須その他条件カラム
     REQUIRED_COLUMNS_TICKER = ["split", "epoch", "ticker"]
@@ -89,7 +90,7 @@ class ExperimentSaver:
         return self.run_dir / data_type
 
     def _get_condition_columns(self, df: pd.DataFrame) -> list[str]:
-        """その他条件カラムを取得（pnl/pred/position以外）
+        """その他条件カラムを取得（pnl/pred/position/pnl_abs以外）
 
         Args:
             df: DataFrame
@@ -97,7 +98,7 @@ class ExperimentSaver:
         Returns:
             条件カラムのリスト
         """
-        value_columns = {self.PNL_COLUMN, self.PRED_COLUMN, self.POSITION_COLUMN}
+        value_columns = {self.PNL_COLUMN, self.PRED_COLUMN, self.POSITION_COLUMN, self.PNL_ABS_COLUMN}
         condition_columns = [col for col in df.columns if col not in value_columns]
         return condition_columns
 
@@ -110,20 +111,20 @@ class ExperimentSaver:
             df: 検証するDataFrame
             data_type: データタイプ
             required_columns: 必須その他条件カラム
-            required_value_columns: 必須値カラム（pnl, pred, position）
-            at_least_one_value: Trueの場合、pnl/pred/positionの内最低1つは存在すること
+            required_value_columns: 必須値カラム（pnl, pred, position, pnl_abs）
+            at_least_one_value: Trueの場合、pnl/pred/position/pnl_absの内最低1つは存在すること
 
         Raises:
             ValidationError: バリデーションエラー
         """
         # 必須値カラムの存在チェック
         if at_least_one_value:
-            # pnl/pred/positionの内最低1つは存在すること
-            available_value_columns = {self.PNL_COLUMN, self.PRED_COLUMN, self.POSITION_COLUMN}
+            # pnl/pred/position/pnl_absの内最低1つは存在すること
+            available_value_columns = {self.PNL_COLUMN, self.PRED_COLUMN, self.POSITION_COLUMN, self.PNL_ABS_COLUMN}
             existing_value_columns = available_value_columns & set(df.columns)
             if not existing_value_columns:
                 raise ValidationError(
-                    f"{data_type}: pnl/pred/positionの内、最低1つはカラムに存在する必要があります\n"
+                    f"{data_type}: pnl/pred/position/pnl_absの内、最低1つはカラムに存在する必要があります\n"
                     f"存在するカラム: {list(df.columns)}"
                 )
         else:
@@ -190,7 +191,7 @@ class ExperimentSaver:
         meta_path = save_dir / "meta.yaml"
 
         condition_columns = self._get_condition_columns(df)
-        value_columns = [col for col in [self.PNL_COLUMN, self.PRED_COLUMN, self.POSITION_COLUMN] if col in df.columns]
+        value_columns = [col for col in [self.PNL_COLUMN, self.PRED_COLUMN, self.POSITION_COLUMN, self.PNL_ABS_COLUMN] if col in df.columns]
 
         meta = {"condition_columns": condition_columns, "value_columns": value_columns}
 
@@ -227,8 +228,8 @@ class ExperimentSaver:
             df: データフレーム
                 - index: datetime
                 - 必須カラム: split, epoch, ticker
-                - 任意カラム: pnl, pred, position, その他条件カラム（random_seed等）
-                - ※ただしpnl/pred/positionの内最低1つはカラムに存在すること
+                - 任意カラム: pnl, pred, position, pnl_abs, その他条件カラム（random_seed等）
+                - ※ただしpnl/pred/position/pnl_absの内最低1つはカラムに存在すること
         """
         data_type = "pnl_pred_position/ticker"
         self._validate_pnl_pred_position(df, data_type, self.REQUIRED_COLUMNS_TICKER, [], at_least_one_value=True)
@@ -242,8 +243,8 @@ class ExperimentSaver:
             df: データフレーム
                 - index: datetime
                 - 必須カラム: split, epoch
-                - 任意カラム: pnl, pred, position, その他条件カラム（model_id, random_seed等）
-                - ※ただしpnl/pred/positionの内最低1つはカラムに存在すること
+                - 任意カラム: pnl, pred, position, pnl_abs, その他条件カラム（model_id, random_seed等）
+                - ※ただしpnl/pred/position/pnl_absの内最低1つはカラムに存在すること
         """
         data_type = "pnl_pred_position/individual"
         self._validate_pnl_pred_position(df, data_type, self.REQUIRED_COLUMNS_INDIVIDUAL, [], at_least_one_value=True)
@@ -257,7 +258,7 @@ class ExperimentSaver:
             df: データフレーム
                 - index: datetime
                 - 必須カラム: pnl, split, epoch, strategy_name
-                - 任意カラム: pred, position, その他条件カラム
+                - 任意カラム: pred, position, pnl_abs, その他条件カラム
         """
         required_value_columns = [self.PNL_COLUMN]
         data_type = "pnl_pred_position/strategy"
