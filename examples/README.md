@@ -1,12 +1,12 @@
 # サンプルコード
 
-このディレクトリには、bt-log-vis-toolの使用例が含まれています。
+このディレクトリには、bt-log-vis-toolの使用例が含まれています。基本的な使い方はPythonスクリプト（.py）を想定していますが、同じAPIをJupyter Notebookから呼び出しても構いません。
 
 ## ファイル一覧
 
 ### example_save.py
 
-Pythonスクリプトとして実験データを保存するサンプルです。
+戦略毎のPnL/Pred/Positionデータを保存する基本的なサンプルです。
 
 実行方法:
 
@@ -14,9 +14,19 @@ Pythonスクリプトとして実験データを保存するサンプルです�
 python examples/example_save.py
 ```
 
+### example_save_with_ticker.py
+
+銘柄毎のpnl/pred/positionと、それを集約した戦略毎データをあわせて保存するサンプルです。
+
+実行方法:
+
+```bash
+python examples/example_save_with_ticker.py
+```
+
 ### example_notebook.ipynb
 
-Jupyter Notebook形式のサンプルです。バックテスト実験をノートブックで行い、結果を保存する典型的なワークフローを示しています。
+同じ内容をJupyter Notebook形式で行うサンプルです（任意。上記の.pyスクリプトと内容は同等）。
 
 使用方法:
 
@@ -39,9 +49,11 @@ saver = ExperimentSaver(
 )
 
 # データ保存
-saver.save_pnl_strategy(pnl_df)
-saver.save_stats_metrics(stats_df)
-saver.save_params(params_dict)
+saver.save_all(
+    pnl_pred_position_strategy=strategy_df,
+    stats_metrics_strategy=stats_df,
+    params=params_dict,
+)
 ```
 
 ### 2. ダッシュボード起動
@@ -54,45 +66,4 @@ streamlit run bt_log_vis_tool/app.py
 
 ## データフォーマット
 
-詳細は[ai_coding_prompt.md](../ai_coding_prompt.md)を参照してください。
-
-### PnL DataFrame例
-
-```python
-import pandas as pd
-
-# 戦略毎PnL
-pnl_df = pd.DataFrame({
-    'strategy_long': [...],      # 戦略1のPnL
-    'strategy_short': [...],     # 戦略2のPnL
-    'split': ['train', 'val', 'test', ...],  # データ分割
-    'run_id': ['epoch_0', 'epoch_0', ...],   # エポック等の識別ID
-}, index=pd.date_range('2023-01-01', periods=100))
-```
-
-### 統計メトリクス DataFrame例
-
-```python
-# 統計メトリクス
-stats_df = pd.DataFrame({
-    'annual_return': [...],
-    'sharpe_ratio': [...],
-    'split': ['train', 'val', 'test', ...],
-    'run_id': ['epoch_0', 'epoch_1', ...],
-}, index=range(10))  # epoch番号
-```
-
-### パラメータ辞書例
-
-```python
-params = {
-    'model': {
-        'type': 'neural_network',
-        'layers': [128, 64, 32],
-    },
-    'training': {
-        'epochs': 10,
-        'learning_rate': 0.001,
-    }
-}
-```
+保存ディレクトリ構造・DataFrameフォーマット・open/closed閲覧権限モデルの詳細は [docs/specification.md](../docs/specification.md) を参照してください。

@@ -12,8 +12,8 @@
 | 用語 | 説明 |
 |---|---|
 | `base_dir` | 実験データの保存ルートディレクトリ。ローカルパスまたは`gs://bucket/prefix`形式のGCSパス |
-| `exp_name` | ノートブック（実験テーマ）単位の名前 |
-| `run_name` | 同一ノートブック内の各試行の名前 |
+| `exp_name` | 実験テーマ単位の名前（1つの実験スクリプトやノートブックに対応することが多い） |
+| `run_name` | 同一テーマ内の各試行の名前 |
 | `split` | データ分割区分。`train` / `val` / `test` の3種 |
 | `epoch` | 学習エポック番号（整数） |
 | `strategy_name` | 戦略名（例: `longshort`, `long_only`）。ベンチマーク系列（buy&hold等、モデル予測に依存しない参照系列）は `bm_` プレフィックスを付ける（例: `bm_buy_and_hold`） |
@@ -246,7 +246,7 @@ params = {
 
 ## 3. 保存 API
 
-`ExperimentSaver` を使って Jupyter Notebook / 学習スクリプトから保存する。`base_dir`にはローカルパスと`gs://bucket/prefix`形式のGCSパスのどちらも渡せる（詳細は5章）。
+`ExperimentSaver` を使って学習スクリプト（.py）から保存する（Jupyter Notebookからも同様に利用可）。`base_dir`にはローカルパスと`gs://bucket/prefix`形式のGCSパスのどちらも渡せる（詳細は5章）。
 
 ### 3.1. 初期化
 

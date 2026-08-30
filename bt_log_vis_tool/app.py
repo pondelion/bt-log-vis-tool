@@ -725,12 +725,17 @@ def render_params_tab(loader: ExperimentLoader, can_view_closed: bool):
     st.subheader("ハイパーパラメータ")
 
     params_files = loader.list_params_files(can_view_closed=can_view_closed)
+    has_hidden_closed = not can_view_closed and len(loader.list_params_files(can_view_closed=True)) > len(params_files)
+
     if not params_files:
-        if can_view_closed:
-            st.warning("パラメータファイルが見つかりません")
+        if has_hidden_closed:
+            st.info("🔒 closedなパラメータファイルが存在します。閲覧するにはログインが必要です。")
         else:
-            st.info("🔒 閲覧可能なパラメータファイルがありません。closedなパラメータを見るにはログインが必要です。")
+            st.warning("パラメータファイルが見つかりません")
         return
+
+    if has_hidden_closed:
+        st.caption("🔒 このほかに、ログインが必要な非公開のパラメータファイルがあります")
 
     if len(params_files) == 1:
         filename = params_files[0]
@@ -751,12 +756,17 @@ def render_code_tab(loader: ExperimentLoader, can_view_closed: bool):
     st.subheader("実験コード")
 
     code_files = loader.list_code_files(can_view_closed=can_view_closed)
+    has_hidden_closed = not can_view_closed and len(loader.list_code_files(can_view_closed=True)) > len(code_files)
+
     if not code_files:
-        if can_view_closed:
-            st.warning("コードファイルが見つかりません")
+        if has_hidden_closed:
+            st.info("🔒 closedなコードファイルが存在します。閲覧するにはログインが必要です。")
         else:
-            st.info("🔒 閲覧可能なコードファイルがありません。closedなコードを見るにはログインが必要です。")
+            st.warning("コードファイルが見つかりません")
         return
+
+    if has_hidden_closed:
+        st.caption("🔒 このほかに、ログインが必要な非公開のコードファイルがあります")
 
     ext_to_language = {
         ".py": "python",
@@ -791,12 +801,17 @@ def render_report_tab(loader: ExperimentLoader, can_view_closed: bool):
     st.subheader("サマリレポート")
 
     report_files = loader.list_reports(can_view_closed=can_view_closed)
+    has_hidden_closed = not can_view_closed and len(loader.list_reports(can_view_closed=True)) > len(report_files)
+
     if not report_files:
-        if can_view_closed:
-            st.info("サマリレポートはまだありません")
+        if has_hidden_closed:
+            st.info("🔒 closedなサマリレポートが存在します。閲覧するにはログインが必要です。")
         else:
-            st.info("🔒 閲覧可能なサマリレポートがありません。closedなレポートを見るにはログインが必要です。")
+            st.info("サマリレポートはまだありません")
         return
+
+    if has_hidden_closed:
+        st.caption("🔒 このほかに、ログインが必要な非公開のレポートがあります")
 
     if len(report_files) == 1:
         filename = report_files[0]

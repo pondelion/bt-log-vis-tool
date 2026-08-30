@@ -6,7 +6,7 @@
 
 ## 特徴
 
-- Jupyter Notebookからの簡単なデータ保存API
+- Pythonスクリプト（Jupyter Notebookからも利用可）からの簡単なデータ保存API
 - 実験結果の構造化保存（PnL、ポジション、統計メトリクス等）
 - Streamlitベースのインタラクティブなダッシュボード
 - エポック毎のパフォーマンス追跡
@@ -43,7 +43,7 @@ pip install -e ".[dev]"
 
 ### 1. 実験データの保存
 
-Jupyter Notebookまたはスクリプトから:
+Pythonスクリプトから（Jupyter Notebookからも同様に利用可）:
 
 ```python
 from bt_log_vis_tool import ExperimentSaver
