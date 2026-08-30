@@ -3,10 +3,11 @@
 保存された実験データを読み込み、可視化用に処理する
 """
 
-from pathlib import Path
-
 import pandas as pd
 import yaml
+
+from bt_log_vis_tool.permissions import is_open
+from bt_log_vis_tool.storage import AnyPath as Path
 
 
 class ExperimentLoader:
@@ -97,7 +98,9 @@ class ExperimentLoader:
         if not data_path.exists():
             return None
 
-        return pd.read_parquet(data_path)
+        # UPathオブジェクトをそのまま渡すとpyarrowがgs://を認識できずTypeErrorになるため、
+        # 文字列化してfsspec URLとして解決させる
+        return pd.read_parquet(str(data_path))
 
     def load_meta(self, data_type: str) -> dict | None:
         """メタデータを読み込み
@@ -112,7 +115,7 @@ class ExperimentLoader:
         if not meta_path.exists():
             return None
 
-        with open(meta_path) as f:
+        with meta_path.open() as f:
             return yaml.safe_load(f)
 
     def load_pnl_pred_position_ticker(self) -> pd.DataFrame | None:
@@ -155,42 +158,134 @@ class ExperimentLoader:
         """
         return self._load_dataframe("stats_metrics/individual")
 
-    def load_params(self, filename: str = "config.yaml") -> dict | None:
+    def load_params(self, filename: str, can_view_closed: bool = False) -> dict | None:
         """ハイパーパラメータを読み込み
 
         Args:
-            filename: YAMLファイル名
+            filename: YAMLファイル名（"open/xxx.yaml"、"closed/xxx.yaml"、"xxx.yaml"のいずれか）
+            can_view_closed: Trueの場合、closed指定のファイルも読み込める
 
         Returns:
-            ハイパーパラメータ辞書
+            ハイパーパラメータ辞書（closed指定でcan_view_closed=Falseの場合、ファイルが存在してもNone）
         """
-        params_dir = self.run_dir / "params"
-        params_path = params_dir / filename
+        if not (can_view_closed or is_open(filename)):
+            return None
+
+        params_path = self.run_dir / "params" / filename
 
         if not params_path.exists():
             return None
 
-        with open(params_path) as f:
+        with params_path.open() as f:
             params = yaml.safe_load(f)
 
         return params
 
-    def load_code(self, filename: str) -> str | None:
+    def list_params_files(self, can_view_closed: bool = False) -> list[str]:
+        """保存済みパラメータファイル名の一覧を取得（アルファベット順）
+
+        Args:
+            can_view_closed: Trueの場合、closed指定のファイルも一覧に含める
+
+        Returns:
+            ファイル名（相対パス）のリスト（paramsディレクトリが無い場合は空リスト）
+        """
+        return self._list_category_files("params", can_view_closed)
+
+    def _list_category_files(self, category: str, can_view_closed: bool = False) -> list[str]:
+        """指定カテゴリ配下のファイル名一覧を取得（アルファベット順）
+
+        <category>/直下のファイルに加え、<category>/open/・<category>/closed/配下のファイルも
+        "open/xxx"・"closed/xxx"の形式で含める。can_view_closed=Falseの場合、
+        closed指定のファイル（存在自体）は一覧から除外する。
+
+        Args:
+            category: データカテゴリ（例: "codes", "report"）
+            can_view_closed: Trueの場合、closed指定のファイルも一覧に含める
+
+        Returns:
+            ファイル名（相対パス）のリスト（ディレクトリが無い場合は空リスト）
+        """
+        category_dir = self.run_dir / category
+        if not category_dir.exists():
+            return []
+
+        relative_paths = []
+        for entry in category_dir.iterdir():
+            if entry.is_dir():
+                if entry.name in ("open", "closed"):
+                    relative_paths.extend(f"{entry.name}/{sub.name}" for sub in entry.iterdir() if not sub.is_dir())
+                continue
+            relative_paths.append(entry.name)
+
+        return sorted(rel for rel in relative_paths if can_view_closed or is_open(rel))
+
+    def _load_category_file(self, category: str, filename: str, can_view_closed: bool = False) -> str | None:
+        """指定カテゴリ配下のファイルをテキストとして読み込み
+
+        Args:
+            category: データカテゴリ（例: "codes", "report"）
+            filename: ファイル名（"open/xxx"、"closed/xxx"、"xxx"のいずれか）
+            can_view_closed: Trueの場合、closed指定のファイルも読み込める
+
+        Returns:
+            ファイル内容の文字列（closed指定でcan_view_closed=Falseの場合、ファイルが存在してもNone）
+        """
+        if not (can_view_closed or is_open(filename)):
+            return None
+
+        file_path = self.run_dir / category / filename
+
+        if not file_path.exists():
+            return None
+
+        return file_path.read_text()
+
+    def load_code(self, filename: str, can_view_closed: bool = False) -> str | None:
         """実験コードを読み込み
 
         Args:
-            filename: コードファイル名
+            filename: コードファイル名（"open/xxx.py"、"closed/xxx.py"、"xxx.py"のいずれか）
+            can_view_closed: Trueの場合、closed指定のファイルも読み込める
 
         Returns:
-            コード文字列
+            コード文字列（closed指定でcan_view_closed=Falseの場合、ファイルが存在してもNone）
         """
-        code_dir = self.run_dir / "codes"
-        code_path = code_dir / filename
+        return self._load_category_file("codes", filename, can_view_closed)
 
-        if not code_path.exists():
-            return None
+    def list_code_files(self, can_view_closed: bool = False) -> list[str]:
+        """保存済みコードファイル名の一覧を取得（アルファベット順）
 
-        return code_path.read_text()
+        Args:
+            can_view_closed: Trueの場合、closed指定のファイルも一覧に含める
+
+        Returns:
+            ファイル名（相対パス）のリスト（コードディレクトリが無い場合は空リスト）
+        """
+        return self._list_category_files("codes", can_view_closed)
+
+    def load_report(self, filename: str, can_view_closed: bool = False) -> str | None:
+        """サマリレポート（markdown、AI生成・手動作成問わず）を読み込み
+
+        Args:
+            filename: レポートファイル名（"open/xxx.md"、"closed/xxx.md"、"xxx.md"のいずれか）
+            can_view_closed: Trueの場合、closed指定のレポートも読み込める
+
+        Returns:
+            レポート文字列（closed指定でcan_view_closed=Falseの場合、ファイルが存在してもNone）
+        """
+        return self._load_category_file("report", filename, can_view_closed)
+
+    def list_reports(self, can_view_closed: bool = False) -> list[str]:
+        """保存済みサマリレポートファイル名の一覧を取得（アルファベット順）
+
+        Args:
+            can_view_closed: Trueの場合、closed指定のレポートも一覧に含める
+
+        Returns:
+            ファイル名（相対パス）のリスト（reportディレクトリが無い場合は空リスト）
+        """
+        return self._list_category_files("report", can_view_closed)
 
     def get_available_data_types(self) -> list[str]:
         """利用可能なデータタイプのリストを取得

@@ -1,6 +1,9 @@
 # bt-log-vis-tool 仕様書
 
 バックテスト実験の結果を構造化保存し、Streamlit ダッシュボードで可視化するツールの仕様。
+ローカルファイルシステムと GCS のどちらもデータソースとして使え、クラウド利用時はログイン・閲覧権限の仕組みを備える。
+
+デプロイ手順（Cloud Run / Terraform）は [docs/deploy.md](deploy.md) を参照。本書はツール自体の機能仕様を扱う。
 
 ---
 
@@ -8,7 +11,7 @@
 
 | 用語 | 説明 |
 |---|---|
-| `base_dir` | 実験データの保存ルートディレクトリ |
+| `base_dir` | 実験データの保存ルートディレクトリ。ローカルパスまたは`gs://bucket/prefix`形式のGCSパス |
 | `exp_name` | ノートブック（実験テーマ）単位の名前 |
 | `run_name` | 同一ノートブック内の各試行の名前 |
 | `split` | データ分割区分。`train` / `val` / `test` の3種 |
@@ -16,6 +19,7 @@
 | `strategy_name` | 戦略名（例: `longshort`, `long_only`）。ベンチマーク系列（buy&hold等、モデル予測に依存しない参照系列）は `bm_` プレフィックスを付ける（例: `bm_buy_and_hold`） |
 | `ticker` | 銘柄コード |
 | `non_metric_columns` | 統計メトリクスDFにおける条件カラム（メトリック以外） |
+| open / closed | ファイル単位の公開区分。openは誰でも閲覧可、closedはログイン済み・許可リスト登録者のみ閲覧可 |
 
 ---
 
@@ -42,11 +46,21 @@
         │   └── individual/          # 個別条件別統計メトリクス (optional)
         │       ├── data.parquet
         │       └── meta.yaml
-        ├── params/
-        │   └── config.yaml          # ハイパーパラメータ (optional)
-        └── codes/
-            └── {filename}           # 実験コード (optional)
+        ├── params/                  # ハイパーパラメータ (optional, open/closed対応)
+        │   ├── open/{filename}.yaml
+        │   ├── closed/{filename}.yaml
+        │   └── {filename}.yaml      # サブディレクトリ無し = closed扱い
+        ├── codes/                   # 実験コード (optional, open/closed対応)
+        │   ├── open/{filename}
+        │   ├── closed/{filename}
+        │   └── {filename}           # サブディレクトリ無し = closed扱い
+        └── report/                  # サマリレポート (optional, open/closed対応)
+            ├── open/{filename}.md
+            ├── closed/{filename}.md
+            └── {filename}.md        # サブディレクトリ無し = closed扱い
 ```
+
+`pnl_pred_position/` と `stats_metrics/` にはopen/closedの区分は無く、存在すれば常に誰でも閲覧できる（実験の性能データ自体は公開してよい、コード・パラメータ・レポートだけを機密扱いできる、という想定）。
 
 ---
 
@@ -188,9 +202,31 @@ longshort ポートフォリオ・シードアンサンブル等の戦略ごと�
 
 ---
 
-### 2.3. ハイパーパラメータ `params/config.yaml` *(optional)*
+### 2.3. open/closed 権限モデル（`params` / `codes` / `report` 共通）
 
-前処理・特徴量・モデル・学習・評価など実験条件をすべて `dict` で渡す。YAML 形式に変換して保存される。
+3カテゴリとも、ファイル名（`filename`引数）の**先頭サブディレクトリ**で公開状態が決まる。設定ファイルは無く、ディレクトリ構造だけで判定する（`bt_log_vis_tool/permissions.py`の`is_open()`）。
+
+| filenameの指定 | 実際の保存先 | 公開状態 |
+|---|---|---|
+| `"open/xxx"` | `{category}/open/xxx` | open（誰でも閲覧可） |
+| `"closed/xxx"` | `{category}/closed/xxx` | closed（ログイン済み・許可リスト登録者のみ） |
+| `"xxx"`（サブディレクトリ無し） | `{category}/xxx` | **closed**（fail-closed。明示的にopenと指定しない限り非公開） |
+
+同一カテゴリ内で複数ファイルを持て、openとclosedを混在させられる（例: `codes/open/public_summary.py`と`codes/closed/model.py`を同時に保存可能）。
+
+閲覧側は、ローカルデータソース利用時は常にopen扱い（無条件で全部見える）。クラウド(GCS)データソース利用時のみ、ログイン＋許可リストで判定される（詳細は4章）。
+
+---
+
+### 2.4. 実験コード `codes/{filename}` *(optional, 複数可)*
+
+実験コードを文字列で渡す。拡張子付きのファイル名を指定する。open/closedの指定方法は2.3節参照。
+
+---
+
+### 2.5. ハイパーパラメータ `params/{filename}` *(optional, 複数可)*
+
+前処理・特徴量・モデル・学習・評価など実験条件をすべて `dict` で渡す。YAML 形式に変換して保存される。open/closedの指定方法は2.3節参照。デフォルトファイル名は`config.yaml`。
 
 ```python
 params = {
@@ -202,15 +238,15 @@ params = {
 
 ---
 
-### 2.4. 実験コード `codes/{filename}` *(optional)*
+### 2.6. サマリレポート `report/{filename}` *(optional, 複数可)*
 
-実験コードを文字列で渡す。拡張子付きのファイル名を指定する。
+結果のサマリレポートをmarkdown文字列で渡す（AI生成・手動作成問わず）。デフォルトファイル名は`report.md`。open/closedの指定方法は2.3節参照。ダッシュボードの「サマリレポート」タブでプレビュー表示される。
 
 ---
 
 ## 3. 保存 API
 
-`ExperimentSaver` を使って Jupyter Notebook から保存する。
+`ExperimentSaver` を使って Jupyter Notebook / 学習スクリプトから保存する。`base_dir`にはローカルパスと`gs://bucket/prefix`形式のGCSパスのどちらも渡せる（詳細は5章）。
 
 ### 3.1. 初期化
 
@@ -218,7 +254,7 @@ params = {
 from bt_log_vis_tool import ExperimentSaver
 
 saver = ExperimentSaver(
-    base_dir="./backtest_experiments",   # 保存ルートディレクトリ
+    base_dir="./backtest_experiments",   # 保存ルートディレクトリ（ローカル or gs://...）
     exp_name="my_experiment",            # 実験名
     run_name="run_001",                  # ラン名
 )
@@ -237,7 +273,7 @@ saver = ExperimentSaver(
 
 ### 3.2. 一括保存 `save_all()`
 
-すべて省略可能（`None` の場合はスキップ）。
+すべて省略可能（`None` の場合はスキップ）。`code_filename` / `report_filename` はデフォルトで`closed/`配下（非公開）になる。openにしたい場合は明示的に`"open/xxx"`を指定する。
 
 ```python
 saver.save_all(
@@ -248,9 +284,13 @@ saver.save_all(
     stats_metrics_individual=stats_ind_df,      # 個別条件別統計メトリクス (optional)
     params=params_dict,                         # ハイパーパラメータ (optional)
     code=code_string,                           # 実験コード文字列 (optional)
-    code_filename="experiment.py",              # コードのファイル名 (optional)
+    code_filename="closed/experiment.py",       # コードのファイル名（デフォルトclosed）
+    report=report_markdown,                  # サマリレポート文字列 (optional)
+    report_filename="closed/report.md",      # レポートのファイル名（デフォルトclosed）
 )
 ```
+
+個別に保存したい場合は `save_code(code, filename)` / `save_params(params, filename)` / `save_report(content, filename)` をそれぞれ直接呼んでもよい。
 
 ### 3.3. バリデーション
 
@@ -270,13 +310,22 @@ Streamlit による Web ダッシュボード。`exp_name` × `run_name` の組�
 
 | UI 要素 | 説明 |
 |---|---|
-| ベースディレクトリ入力 | データの保存先ルートパス |
+| データソース選択（ローカル/クラウド） | ローカル実行時のみ表示。Cloud Run上ではクラウド固定で選択肢自体が非表示になる |
+| ベースディレクトリ / GCSパス入力 | データの保存先ルートパス。クラウドモードではCloud Run環境変数`GCS_BASE_DIR`があればデフォルト値として自動入力される |
+| ログインUI | クラウドデータソース選択時のみ表示（4.1.1参照） |
 | exp_name セレクトボックス | 利用可能な実験一覧から選択 |
 | run_name セレクトボックス | 選択した実験内のラン一覧から選択 |
 | ベストエポック判定設定 | 判定 split / メトリクス / strategy_name を選択（全タブ共通） |
 | ベストエポック表示 | 算出されたベストエポック番号を表示 |
 
 ベストエポック判定のデフォルト: `split=test`, メトリクス=sharpe 系の先頭, strategy=先頭
+
+#### 4.1.1. ログイン（クラウドデータソース選択時のみ）
+
+- Googleアカウントでのログイン（Streamlitネイティブ認証, `st.login()`）
+- ログイン自体は任意のGoogleアカウントで可能。**closedコンテンツの閲覧可否は、`{バケットルート}/_admin/allowlist.yaml`に登録された許可メールアドレスかどうかで判定する**（アプリ側の許可リストが実効的なアクセス制御。GoogleのOAuth同意画面のTesting/Test Users設定は、実際には非機密スコープのみの場合アクセス制限として機能しないことを確認済みのため、当てにしない）
+- 許可リストの読み込みに失敗した場合はfail-closed（closedコンテンツは一切表示しない）
+- ローカルデータソース選択時はログイン機構自体を使わず、常にフルオープン（openもclosedも区別なく全部閲覧可能）
 
 ---
 
@@ -289,6 +338,9 @@ Streamlit による Web ダッシュボード。`exp_name` × `run_name` の組�
 | 銘柄別時系列（資産曲線・ポジション） | 銘柄別の累積PnL・ポジション・予測値 | 「データなし」表示 |
 | パラメータ | ハイパーパラメータの JSON 表示 | 警告表示 |
 | コード | 実験コードのシンタックスハイライト表示 | 警告表示 |
+| サマリレポート | サマリレポートのMarkdownプレビュー | 案内表示 |
+
+パラメータ・コード・サマリレポートの3タブは、closedなファイルしか無く閲覧権限が無い場合、「🔒 ログインが必要です」という案内を表示する（ファイルの存在自体を隠す。fail-closed）。
 
 ---
 
@@ -330,28 +382,65 @@ Streamlit による Web ダッシュボード。`exp_name` × `run_name` の組�
 ### 4.5. 銘柄別時系列タブ
 
 - `pnl_pred_position/ticker` データがない場合は「データなし」を表示してタブ終了
-- エポック選択セレクトボックス（デフォルト: サイドバーのベストエポック）
-- split チェックボックス（横並び、デフォルト: 全選択）
-- ticker マルチセレクト（デフォルト: 全選択）
-- 表示する値:
+- **「グラフを表示する」チェックボックス（デフォルトOFF）**: 銘柄数が多いとダウンロード・描画が重いため、チェックを入れるまではデータの読み込み自体を行わない（チェックボックスより後ろの処理は一切実行されない）
+- チェックを入れた場合のみ、以下を表示:
+  - エポック選択セレクトボックス（デフォルト: サイドバーのベストエポック）
+  - split チェックボックス（横並び、デフォルト: 全選択）
+  - ticker マルチセレクト（デフォルト: 全選択）
   - 累積リターン（`pnl` が存在する場合）
   - 累積損益・絶対値（`pnl_abs` が存在する場合）
   - ポジション時系列（`position` が存在する場合）
   - 予測値時系列（`pred` が存在する場合）
-- 各グラフ内で選択 ticker を色分けして重ねて表示、split ごとに横並び
+  - 各グラフ内で選択 ticker を色分けして重ねて表示、split ごとに横並び
 
 ---
 
 ### 4.6. パラメータタブ
 
-- `params/config.yaml` を読み込み、JSON 形式で表示
-- ファイルが存在しない場合は警告を表示
+- `params/` 配下のopen（+ログイン済みならclosedも）なファイルを列挙
+- ファイルが1つの場合はそのまま表示、複数の場合はセレクトボックスで選択
+- 選択したファイルをJSON形式で表示
+- 閲覧可能なファイルが無い場合は警告（またはログイン案内）を表示
 
 ---
 
 ### 4.7. コードタブ
 
-- `codes/` ディレクトリ内のファイルを列挙
+- `codes/` 配下のopen（+ログイン済みならclosedも）なファイルを列挙
 - ファイルが1つの場合はそのまま表示、複数の場合はセレクトボックスで選択
 - 拡張子に応じてシンタックスハイライト（`.py` → Python, `.yaml` → YAML 等）
-- ファイルが存在しない場合は警告を表示
+- 閲覧可能なファイルが無い場合は警告（またはログイン案内）を表示
+
+---
+
+### 4.8. サマリレポートタブ
+
+- `report/` 配下のopen（+ログイン済みならclosedも）なファイルを列挙
+- ファイルが1つの場合はそのまま表示、複数の場合はセレクトボックスで選択
+- 選択したファイルをMarkdownとしてプレビュー表示（`st.markdown()`）
+- 閲覧可能なファイルが無い場合は案内を表示
+
+---
+
+## 5. ストレージ・実行環境
+
+### 5.1. ローカル / GCS 切り替え
+
+`bt_log_vis_tool/storage.py`の`AnyPath`（`universal_pathlib.UPath`）により、`ExperimentSaver`/`ExperimentLoader`とも`base_dir`にローカルパスと`gs://bucket/prefix`形式のGCSパスのどちらも透過的に渡せる。ダッシュボード側はサイドバーの「データソース」選択で切り替える（ローカル実行時のみ選択可、Cloud Run上ではGCS固定）。
+
+### 5.2. キャッシュ
+
+ダッシュボードの主要なデータ読み込み（`stats_metrics`系・`pnl_pred_position`系・メタデータ・データ型一覧）は`@st.cache_data`でキャッシュされる（TTL 24時間、キー毎最大8件のLRU）。Streamlitはウィジェット操作の度にスクリプト全体を再実行するため、無関係な操作でも毎回GCSから再ダウンロードしないようにするための措置。実験結果は保存後に更新されない運用を前提としている。
+
+### 5.3. Cloud Run実行時の環境変数
+
+| 環境変数 | 用途 |
+|---|---|
+| `K_SERVICE` | Cloud Runが自動設定。存在すればクラウド実行と判定し、データソース選択肢からローカルを隠す |
+| `GCS_BASE_DIR` | 設定されていれば、GCSパス入力欄のデフォルト値として使う |
+
+---
+
+## 6. 関連ドキュメント
+
+- [docs/deploy.md](deploy.md) — GCP Cloud Runへのデプロイ手順（Terraform, Docker, Google OAuth設定, 許可リスト運用）

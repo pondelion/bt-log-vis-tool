@@ -10,6 +10,12 @@ dependencies = [
     "pyyaml>=6.0",
     "streamlit>=1.28.0",
     "plotly>=5.17.0",
+    "universal-pathlib>=0.2.5",
+    "gcsfs>=2024.10.0",
+    "authlib>=1.3.2,<1.6.6",  # 1.6.6以降はStreamlitのTornadoIntegration(session=None)と非互換
+    # (FrameworkIntegration.set_state_dataがcache使用時もsession[key]=...を呼ぶようになり、
+    #  session=NoneだとTypeError: 'NoneType' object does not support item assignmentになる。
+    #  1.6.5で固定検証済み。streamlit側の対応版が出たら見直すこと)
 ]
 
 [project.optional-dependencies]

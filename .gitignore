@@ -9,3 +9,17 @@ __pycache__
 
 backtest_experiments
 bak
+
+# terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
+*.tfvars
+crash.log
+
+# streamlit secrets・OAuthクライアント等の秘密情報置き場（テンプレートのみコミットする）
+.streamlit/secrets.toml
+secrets.toml
+secrets/
+allowlist.yaml

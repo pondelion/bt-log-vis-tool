@@ -3,11 +3,12 @@
 バックテスト実験のデータを指定フォーマットで保存する
 """
 
-from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import yaml
+
+from bt_log_vis_tool.storage import AnyPath as Path
 
 
 class ValidationError(Exception):
@@ -176,7 +177,9 @@ class ExperimentSaver:
         save_dir = self._get_data_dir(data_type)
         save_dir.mkdir(parents=True, exist_ok=True)
         save_path = save_dir / filename
-        df.to_parquet(save_path)
+        # UPathオブジェクトをそのまま渡すとpyarrowがgs://を認識できずTypeErrorになるため、
+        # 文字列化してfsspec URLとして解決させる
+        df.to_parquet(str(save_path))
         print(f"Saved: {save_path}")
 
     def _save_meta(self, df: pd.DataFrame, data_type: str) -> None:
@@ -195,7 +198,7 @@ class ExperimentSaver:
 
         meta = {"condition_columns": condition_columns, "value_columns": value_columns}
 
-        with open(meta_path, "w") as f:
+        with meta_path.open("w") as f:
             yaml.dump(meta, f, default_flow_style=False, allow_unicode=True)
 
         print(f"Saved meta: {meta_path}")
@@ -216,7 +219,7 @@ class ExperimentSaver:
 
         meta = {"non_metric_columns": non_metric_columns, "metric_columns": metric_columns}
 
-        with open(meta_path, "w") as f:
+        with meta_path.open("w") as f:
             yaml.dump(meta, f, default_flow_style=False, allow_unicode=True)
 
         print(f"Saved meta: {meta_path}")
@@ -327,31 +330,56 @@ class ExperimentSaver:
         self._save_dataframe(df, data_type)
         self._save_stats_meta(df, data_type, self.non_metric_columns_stats_individual)
 
+    def _save_text_file(self, category: str, content: str, filename: str) -> None:
+        """指定カテゴリ配下にテキストファイルを保存
+
+        Args:
+            category: データカテゴリ（例: "codes", "report", "params"）
+            content: 保存する文字列
+            filename: ファイル名。必ず"open/xxx"または"closed/xxx"のようにサブディレクトリを
+                      付けて保存すること。サブディレクトリを付けなかった場合はfail-closedで
+                      closed扱いになる（bt_log_vis_tool.permissions.is_open参照）。
+        """
+        save_path = self._get_data_dir(category) / filename
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        save_path.write_text(content)
+        print(f"Saved: {save_path}")
+
     def save_code(self, code: str, filename: str) -> None:
         """実験コードを保存
 
         Args:
             code: 保存するコード文字列
-            filename: ファイル名（例: "experiment.py"）
+            filename: ファイル名。"open/xxx.py"のように保存するとopen（誰でも閲覧可）、
+                      "closed/xxx.py"はclosed（非ログインユーザーには非公開）。
+                      サブディレクトリを付けない場合はfail-closedでclosed扱いになる。
         """
-        save_dir = self._get_data_dir("codes")
-        save_dir.mkdir(parents=True, exist_ok=True)
-        save_path = save_dir / filename
-        save_path.write_text(code)
-        print(f"Saved: {save_path}")
+        self._save_text_file("codes", code, filename)
 
-    def save_params(self, params: dict[str, Any], filename: str = "config.yaml") -> None:
+    def save_report(self, content: str, filename: str = "closed/report.md") -> None:
+        """サマリレポート（markdown、AI生成・手動作成問わず）を保存
+
+        Args:
+            content: 保存するmarkdown文字列
+            filename: ファイル名。"open/xxx.md"のように保存するとopen（誰でも閲覧可）、
+                      "closed/xxx.md"はclosed（非ログインユーザーには非公開）。
+                      サブディレクトリを付けない場合はfail-closedでclosed扱いになる。
+        """
+        self._save_text_file("report", content, filename)
+
+    def save_params(self, params: dict[str, Any], filename: str = "closed/config.yaml") -> None:
         """ハイパーパラメータをYAML形式で保存
 
         Args:
             params: ハイパーパラメータ辞書
-            filename: ファイル名（例: "config.yaml"）
+            filename: ファイル名。"open/xxx.yaml"のように保存するとopen（誰でも閲覧可）、
+                      "closed/xxx.yaml"はclosed（非ログインユーザーには非公開）。
+                      サブディレクトリを付けない場合はfail-closedでclosed扱いになる。
         """
-        save_dir = self._get_data_dir("params")
-        save_dir.mkdir(parents=True, exist_ok=True)
-        save_path = save_dir / filename
+        save_path = self._get_data_dir("params") / filename
+        save_path.parent.mkdir(parents=True, exist_ok=True)
 
-        with open(save_path, "w") as f:
+        with save_path.open("w") as f:
             yaml.dump(params, f, default_flow_style=False, allow_unicode=True)
 
         print(f"Saved: {save_path}")
@@ -365,7 +393,9 @@ class ExperimentSaver:
         stats_metrics_individual: pd.DataFrame | None = None,
         params: dict[str, Any] | None = None,
         code: str | None = None,
-        code_filename: str = "experiment.py",
+        code_filename: str = "closed/experiment.py",
+        report: str | None = None,
+        report_filename: str = "closed/report.md",
     ) -> None:
         """全データを一括保存
 
@@ -378,6 +408,8 @@ class ExperimentSaver:
             params: ハイパーパラメータ
             code: 実験コード
             code_filename: コードのファイル名
+            report: サマリレポート（markdown文字列、AI生成・手動作成問わず、任意）
+            report_filename: レポートのファイル名
         """
         if pnl_pred_position_ticker is not None:
             self.save_pnl_pred_position_ticker(pnl_pred_position_ticker)
@@ -399,5 +431,8 @@ class ExperimentSaver:
 
         if code is not None:
             self.save_code(code, code_filename)
+
+        if report is not None:
+            self.save_report(report, report_filename)
 
         print(f"\nAll data saved to: {self.run_dir}")

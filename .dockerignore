@@ -1,0 +1,16 @@
+.venv
+.git
+.ruff_cache
+.pytest_cache
+.vscode
+__pycache__
+*.egg-info
+
+.env
+.streamlit/secrets.toml
+
+backtest_experiments
+bak
+examples
+
+deploy

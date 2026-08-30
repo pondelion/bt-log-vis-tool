@@ -3,16 +3,65 @@
 バックテスト実験結果を可視化するWebダッシュボード
 """
 
-from pathlib import Path
+import os
 
+import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from bt_log_vis_tool.auth import render_auth_sidebar
 from bt_log_vis_tool.loader import ExperimentLoader
+from bt_log_vis_tool.storage import AnyPath as Path
 from bt_log_vis_tool.utils import calculate_cumulative_pnl, filter_by_conditions
 
 SPLIT_ORDER = ["train", "val", "test"]
+
+# Cloud Runは全コンテナにK_SERVICEを自動設定するため、これでクラウド実行かどうかを判定できる
+# （デプロイ済み環境ではローカルデータソースを選択する意味が無いため選択肢自体を隠す）
+IS_CLOUD_RUN = bool(os.environ.get("K_SERVICE"))
+
+# データ取得のキャッシュTTL（秒）。Streamlitはウィジェット操作の度にスクリプト全体を
+# 再実行するため、キャッシュ無しだと無関係なウィジェット操作（例: コードタブでの
+# ファイル切替）でもGCS上の重いparquetを毎回re-fetchしてしまい重くなる。
+# 実験結果は一度保存された後は更新されない運用のため、TTLは長め（24時間）にしている
+# （0にする＝無期限も検討したが、万一の更新に対する自己修復のため一応上限は設ける）。
+_CACHE_TTL_SECONDS = 60 * 60 * 24
+
+# ExperimentLoaderはbase_dir/exp_name/run_nameで一意に定まるが、st.cache_dataの
+# デフォルトハッシュではオブジェクトそのものを見てしまいキャッシュが効かないため、
+# 意味のあるキー（3つの文字列）でハッシュするよう明示する。
+_LOADER_HASH_FUNCS = {ExperimentLoader: lambda loader: (str(loader.base_dir), loader.exp_name, loader.run_name)}
+
+
+@st.cache_data(ttl=_CACHE_TTL_SECONDS, max_entries=8, show_spinner=False, hash_funcs=_LOADER_HASH_FUNCS)
+def _load_stats_metrics_strategy(loader: ExperimentLoader) -> pd.DataFrame | None:
+    return loader.load_stats_metrics_strategy()
+
+
+@st.cache_data(ttl=_CACHE_TTL_SECONDS, max_entries=8, show_spinner=False, hash_funcs=_LOADER_HASH_FUNCS)
+def _load_stats_metrics_individual(loader: ExperimentLoader) -> pd.DataFrame | None:
+    return loader.load_stats_metrics_individual()
+
+
+@st.cache_data(ttl=_CACHE_TTL_SECONDS, max_entries=8, show_spinner=False, hash_funcs=_LOADER_HASH_FUNCS)
+def _load_pnl_pred_position_strategy(loader: ExperimentLoader) -> pd.DataFrame | None:
+    return loader.load_pnl_pred_position_strategy()
+
+
+@st.cache_data(ttl=_CACHE_TTL_SECONDS, max_entries=8, show_spinner=False, hash_funcs=_LOADER_HASH_FUNCS)
+def _load_pnl_pred_position_ticker(loader: ExperimentLoader) -> pd.DataFrame | None:
+    return loader.load_pnl_pred_position_ticker()
+
+
+@st.cache_data(ttl=_CACHE_TTL_SECONDS, max_entries=8, show_spinner=False, hash_funcs=_LOADER_HASH_FUNCS)
+def _load_meta(loader: ExperimentLoader, data_type: str) -> dict | None:
+    return loader.load_meta(data_type)
+
+
+@st.cache_data(ttl=_CACHE_TTL_SECONDS, max_entries=8, show_spinner=False, hash_funcs=_LOADER_HASH_FUNCS)
+def _get_available_data_types(loader: ExperimentLoader) -> list[str]:
+    return loader.get_available_data_types()
 
 
 def sort_splits(splits: list[str]) -> list[str]:
@@ -24,22 +73,52 @@ def sort_splits(splits: list[str]) -> list[str]:
 
 def main():
     """メイン関数"""
-    st.set_page_config(page_title="Backtest Dashboard", layout="wide")
+    st.set_page_config(page_title="Backtest Dashboard", page_icon="💹", layout="wide")
 
     st.title("バックテスト実験ダッシュボード")
 
     with st.sidebar:
         st.header("設定")
 
-        base_dir = st.text_input(
-            "ベースディレクトリ",
-            # value=str(Path.home() / "backtest_experiments"),
-            value=str(Path('.') / "backtest_experiments/results"),
-            help="実験データが保存されているディレクトリ",
-        )
+        if IS_CLOUD_RUN:
+            data_source = "クラウド (GCS)"
+        else:
+            data_source = st.radio("データソース", ["ローカル", "クラウド (GCS)"], horizontal=True)
+
+        if data_source == "クラウド (GCS)":
+            base_dir = st.text_input(
+                "GCSパス",
+                value=os.environ.get("GCS_BASE_DIR", "gs://"),
+                help="実験データが保存されているGCSバケット/プレフィックス（例: gs://my-bucket/backtest_experiments/results）",
+            )
+        else:
+            base_dir = st.text_input(
+                "ベースディレクトリ",
+                value=str(Path('.') / "backtest_experiments/results"),
+                help="実験データが保存されているディレクトリ",
+            )
+
+        if data_source == "クラウド (GCS)":
+            auth_state = render_auth_sidebar(base_dir)
+            can_view_closed = auth_state.is_authorized
+        else:
+            # ローカルデータソースは権限判定なし・常にフルオープン（今まで通りの挙動）
+            can_view_closed = True
+
+        if data_source == "クラウド (GCS)" and base_dir.strip() in ("", "gs://"):
+            st.info("GCSパスを入力してください（例: gs://my-bucket/backtest_experiments/results）")
+            return
 
         base_path = Path(base_dir)
-        if not base_path.exists():
+        try:
+            base_dir_exists = base_path.exists()
+        except Exception as e:
+            st.error(f"ディレクトリへのアクセスに失敗しました: {e}")
+            if data_source == "クラウド (GCS)":
+                st.info("GCS利用時はGoogle Cloudの認証情報（Application Default Credentials）が設定されているか確認してください")
+            return
+
+        if not base_dir_exists:
             st.warning(f"ディレクトリが存在しません: {base_dir}")
             st.info("データを保存してから実行してください")
             return
@@ -66,13 +145,13 @@ def main():
 
     st.header(f"実験: {exp_name} / ラン: {run_name}")
 
-    available_types = loader.get_available_data_types()
+    available_types = _get_available_data_types(loader)
     st.sidebar.info(f"利用可能なデータ: {', '.join(available_types)}")
 
     # --- サイドバーにベストエポック判定設定（全タブ共通） ---
     best_epoch = _setup_best_epoch_sidebar(loader)
 
-    tabs = st.tabs(["統計メトリクス", "戦略時系列（資産曲線・ポジション）", "銘柄別時系列（資産曲線・ポジション）", "パラメータ", "コード"])
+    tabs = st.tabs(["統計メトリクス", "戦略時系列（資産曲線・ポジション）", "銘柄別時系列（資産曲線・ポジション）", "パラメータ", "コード", "サマリレポート"])
 
     with tabs[0]:
         render_stats_tab(loader, best_epoch)
@@ -84,18 +163,21 @@ def main():
         render_ticker_tab(loader, best_epoch)
 
     with tabs[3]:
-        render_params_tab(loader)
+        render_params_tab(loader, can_view_closed)
 
     with tabs[4]:
-        render_code_tab(loader)
+        render_code_tab(loader, can_view_closed)
+
+    with tabs[5]:
+        render_report_tab(loader, can_view_closed)
 
 
 def _setup_best_epoch_sidebar(loader: ExperimentLoader) -> int | None:
     """サイドバーにベストエポック判定設定を追加し、best_epochを返す"""
-    stats_df = loader.load_stats_metrics_strategy()
+    stats_df = _load_stats_metrics_strategy(loader)
     stats_type = "stats_metrics/strategy"
     if stats_df is None:
-        stats_df = loader.load_stats_metrics_individual()
+        stats_df = _load_stats_metrics_individual(loader)
         stats_type = "stats_metrics/individual"
     if stats_df is None:
         return None
@@ -103,7 +185,7 @@ def _setup_best_epoch_sidebar(loader: ExperimentLoader) -> int | None:
     if stats_df.index.name == "epoch":
         stats_df = stats_df.reset_index(drop="epoch" in stats_df.columns)
 
-    meta = loader.load_meta(stats_type)
+    meta = _load_meta(loader, stats_type)
     if meta is not None:
         non_metric_columns = meta.get("non_metric_columns", ["split"])
         metric_cols = meta.get("metric_columns", [])
@@ -159,16 +241,16 @@ def render_stats_tab(loader: ExperimentLoader, best_epoch: int | None):
     """統計メトリクスタブを描画"""
     st.subheader("統計メトリクス")
 
-    stats_df = loader.load_stats_metrics_strategy()
+    stats_df = _load_stats_metrics_strategy(loader)
     data_type = "stats_metrics/strategy"
     if stats_df is None:
-        stats_df = loader.load_stats_metrics_individual()
+        stats_df = _load_stats_metrics_individual(loader)
         data_type = "stats_metrics/individual"
     if stats_df is None:
         st.warning("統計メトリクスデータが見つかりません")
         return
 
-    meta = loader.load_meta(data_type)
+    meta = _load_meta(loader, data_type)
     if meta is not None:
         non_metric_columns = meta.get("non_metric_columns", ["split"])
         metric_cols = meta.get("metric_columns", [])
@@ -309,14 +391,14 @@ def render_timeseries_tab(loader: ExperimentLoader, best_epoch: int | None):
     """時系列（資産曲線・ポジション）タブを描画"""
     st.subheader("時系列データ可視化")
 
-    strategy_df = loader.load_pnl_pred_position_strategy()
+    strategy_df = _load_pnl_pred_position_strategy(loader)
 
     if strategy_df is None:
         st.warning("戦略データが見つかりません")
         return
 
     # メタデータ読み込み
-    meta = loader.load_meta("pnl_pred_position/strategy")
+    meta = _load_meta(loader, "pnl_pred_position/strategy")
     if meta is None:
         st.warning("メタデータが見つかりません")
         return
@@ -495,12 +577,19 @@ def render_ticker_tab(loader: ExperimentLoader, best_epoch: int | None):
     """銘柄別時系列タブを描画"""
     st.subheader("銘柄別時系列")
 
-    ticker_df = loader.load_pnl_pred_position_ticker()
+    # 銘柄別データはファイルサイズが大きくGCSからのダウンロードも重いため、
+    # チェックボックスで明示的に選択されるまではロード自体を行わない
+    show_charts = st.checkbox("グラフを表示する（銘柄数が多いとダウンロード・描画が重くなります）", value=False, key="ticker_show_charts")
+    if not show_charts:
+        st.info("上のチェックボックスをオンにするとグラフが表示されます")
+        return
+
+    ticker_df = _load_pnl_pred_position_ticker(loader)
     if ticker_df is None:
         st.info("銘柄別データ（pnl_pred_position/ticker）が見つかりません")
         return
 
-    meta = loader.load_meta("pnl_pred_position/ticker")
+    meta = _load_meta(loader, "pnl_pred_position/ticker")
     if meta is None:
         st.warning("メタデータが見つかりません")
         return
@@ -626,31 +715,47 @@ def render_ticker_tab(loader: ExperimentLoader, best_epoch: int | None):
                 st.plotly_chart(fig, use_container_width=True)
 
 
-def render_params_tab(loader: ExperimentLoader):
-    """パラメータタブを描画"""
+def render_params_tab(loader: ExperimentLoader, can_view_closed: bool):
+    """パラメータタブを描画
+
+    Args:
+        loader: ExperimentLoader
+        can_view_closed: Trueの場合closed指定のパラメータファイルも表示する
+    """
     st.subheader("ハイパーパラメータ")
 
-    params = loader.load_params()
-
-    if params is None:
-        st.warning("パラメータファイルが見つかりません")
+    params_files = loader.list_params_files(can_view_closed=can_view_closed)
+    if not params_files:
+        if can_view_closed:
+            st.warning("パラメータファイルが見つかりません")
+        else:
+            st.info("🔒 閲覧可能なパラメータファイルがありません。closedなパラメータを見るにはログインが必要です。")
         return
 
+    if len(params_files) == 1:
+        filename = params_files[0]
+    else:
+        filename = st.selectbox("ファイル選択", params_files, key="params_file_select")
+
+    params = loader.load_params(filename, can_view_closed=can_view_closed)
     st.json(params)
 
 
-def render_code_tab(loader: ExperimentLoader):
-    """コードタブを描画"""
+def render_code_tab(loader: ExperimentLoader, can_view_closed: bool):
+    """コードタブを描画
+
+    Args:
+        loader: ExperimentLoader
+        can_view_closed: Trueの場合closed指定のコードも表示する
+    """
     st.subheader("実験コード")
 
-    codes_dir = loader.run_dir / "codes"
-    if not codes_dir.exists():
-        st.warning("コードファイルが見つかりません")
-        return
-
-    code_files = sorted(codes_dir.iterdir())
+    code_files = loader.list_code_files(can_view_closed=can_view_closed)
     if not code_files:
-        st.warning("コードファイルが見つかりません")
+        if can_view_closed:
+            st.warning("コードファイルが見つかりません")
+        else:
+            st.info("🔒 閲覧可能なコードファイルがありません。closedなコードを見るにはログインが必要です。")
         return
 
     ext_to_language = {
@@ -666,15 +771,41 @@ def render_code_tab(loader: ExperimentLoader):
     }
 
     if len(code_files) == 1:
-        f = code_files[0]
-        lang = ext_to_language.get(f.suffix.lower(), "text")
-        st.markdown(f"**{f.name}**")
-        st.code(loader.load_code(f.name) or "", language=lang)
+        filename = code_files[0]
+        lang = ext_to_language.get(Path(filename).suffix.lower(), "text")
+        st.markdown(f"**{filename}**")
+        st.code(loader.load_code(filename, can_view_closed=can_view_closed) or "", language=lang)
     else:
-        selected = st.selectbox("ファイル選択", [f.name for f in code_files], key="code_file_select")
-        suffix = Path(selected).suffix.lower()
-        lang = ext_to_language.get(suffix, "text")
-        st.code(loader.load_code(selected) or "", language=lang)
+        selected = st.selectbox("ファイル選択", code_files, key="code_file_select")
+        lang = ext_to_language.get(Path(selected).suffix.lower(), "text")
+        st.code(loader.load_code(selected, can_view_closed=can_view_closed) or "", language=lang)
+
+
+def render_report_tab(loader: ExperimentLoader, can_view_closed: bool):
+    """サマリレポートタブを描画
+
+    Args:
+        loader: ExperimentLoader
+        can_view_closed: Trueの場合closed指定のレポートも表示する
+    """
+    st.subheader("サマリレポート")
+
+    report_files = loader.list_reports(can_view_closed=can_view_closed)
+    if not report_files:
+        if can_view_closed:
+            st.info("サマリレポートはまだありません")
+        else:
+            st.info("🔒 閲覧可能なサマリレポートがありません。closedなレポートを見るにはログインが必要です。")
+        return
+
+    if len(report_files) == 1:
+        filename = report_files[0]
+        content = loader.load_report(filename, can_view_closed=can_view_closed) or ""
+        st.markdown(content)
+    else:
+        selected = st.selectbox("レポート選択", report_files, key="report_file_select")
+        content = loader.load_report(selected, can_view_closed=can_view_closed) or ""
+        st.markdown(content)
 
 
 if __name__ == "__main__":

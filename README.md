@@ -12,6 +12,11 @@
 - エポック毎のパフォーマンス追跡
 - ベストエポックの自動検出
 - Train/Val/Test split毎の可視化
+- データソースをローカル/GCSで切り替え可能
+- クラウド(GCS)利用時のGoogleログイン＋ファイル単位のopen/closed閲覧権限
+- GCP Cloud Runへのデプロイに対応（Terraform）
+
+詳細な仕様は [docs/specification.md](docs/specification.md)、デプロイ手順は [docs/deploy.md](docs/deploy.md) を参照してください。
 
 ## インストール
 
@@ -57,8 +62,11 @@ saver.save_all(
     stats_metrics_strategy=stats_df,         # 戦略毎統計メトリクス DataFrame
     params=params_dict,                      # ハイパーパラメータ辞書
     code=code_string,                        # 実験コード（文字列）
+    code_filename="closed/experiment.py",    # デフォルトclosed。open/closedの詳細は仕様書参照
 )
 ```
+
+`base_dir`にはローカルパスの他、`gs://bucket/prefix`形式のGCSパスも渡せます。
 
 ### 2. ダッシュボードの起動
 
@@ -66,77 +74,11 @@ saver.save_all(
 streamlit run bt_log_vis_tool/app.py
 ```
 
-ブラウザで http://localhost:8501 にアクセスして可視化
+ブラウザで http://localhost:8501 にアクセスして可視化。サイドバーからデータソース（ローカル/GCS）を切り替えられます。
 
-## データ仕様
+## データ仕様・ダッシュボード機能
 
-詳細は [specification.md](specification.md) を参照してください。
-
-### 保存ディレクトリ構造
-
-```
-{base_dir}/
-└── {exp_name}/
-    └── {run_name}/
-        ├── pnl_pred_position/
-        │   ├── ticker/
-        │   │   ├── data.parquet
-        │   │   └── meta.yaml
-        │   ├── individual/
-        │   │   ├── data.parquet
-        │   │   └── meta.yaml
-        │   └── strategy/
-        │       ├── data.parquet
-        │       └── meta.yaml
-        ├── stats_metrics/
-        │   ├── strategy/
-        │   │   ├── data.parquet
-        │   │   └── meta.yaml
-        │   └── individual/
-        │       ├── data.parquet
-        │       └── meta.yaml
-        ├── params/
-        │   └── config.yaml
-        └── codes/
-            └── experiment.py
-```
-
-### DataFrame フォーマット例
-
-#### PnL/Pred/Position DataFrame (戦略毎)
-
-```python
-# index: DatetimeIndex
-# 必須カラム: pnl, split, epoch, strategy_name
-# 任意カラム: pred, position, その他条件カラム
-
-            split  epoch strategy_name    pnl   pred  position
-2023-01-01  train      0     longshort  0.010  0.123         1
-2023-01-02  train      0     longshort  0.005 -0.045         0
-2023-01-03  train      0     longshort -0.002  0.234        -1
-...
-```
-
-#### 統計メトリクス DataFrame (戦略毎)
-
-```python
-# index: epoch番号
-# 必須カラム: split, strategy_name
-# その他: メトリック名（実験毎に任意）
-
-       split strategy_name  annual_return  sharpe_ratio  max_drawdown
-0      train     longshort           0.15           1.2         -0.10
-0        val     longshort           0.12           1.0         -0.15
-1      train     longshort           0.18           1.5         -0.08
-...
-```
-
-## ダッシュボード機能
-
-- **統計メトリクス**: Split毎の統計値表示とエポック推移グラフ
-- **資産曲線**: 戦略毎の累積PnL時系列（エポック選択可能、ベストエポック自動検出）
-- **ポジション**: 戦略毎のポジション時系列
-- **パラメータ**: ハイパーパラメータの確認
+保存ディレクトリ構造、DataFrameフォーマット、open/closed閲覧権限モデル、ダッシュボードの各タブの詳細仕様は [docs/specification.md](docs/specification.md) を参照してください。
 
 ## サンプルコード
 
