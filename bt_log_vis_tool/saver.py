@@ -38,6 +38,10 @@ class ExperimentSaver:
     REQUIRED_STATS_COLUMNS_STRATEGY = ["split", "epoch", "strategy_name"]
     REQUIRED_STATS_COLUMNS_INDIVIDUAL = ["split", "epoch"]
 
+    # ウォークフォワード等、複数期間を区別するための任意カラム（両方揃えて指定する。片方だけは不可）
+    PERIOD_START_COLUMN = "period_start"
+    PERIOD_END_COLUMN = "period_end"
+
     def __init__(
         self,
         base_dir: str | Path,
@@ -289,6 +293,27 @@ class ExperimentSaver:
                 f"存在するカラム: {list(df.columns)}"
             )
 
+        # period_start/period_endは片方だけの指定を許容しない（両方揃えるか、両方無いかのどちらか）
+        has_period_start = self.PERIOD_START_COLUMN in df.columns
+        has_period_end = self.PERIOD_END_COLUMN in df.columns
+        if has_period_start != has_period_end:
+            raise ValidationError(
+                f"{data_type}: {self.PERIOD_START_COLUMN}と{self.PERIOD_END_COLUMN}は両方揃えて指定してください"
+                f"（片方だけの指定はできません）。存在するカラム: {list(df.columns)}"
+            )
+
+    def _resolve_non_metric_columns(self, df: pd.DataFrame, non_metric_columns: list[str]) -> list[str]:
+        """non_metric_columnsに、dfに存在するならperiod_start/period_endを自動的に加える。
+
+        呼び出し側がnon_metric_columns_stats_*を明示的に更新しなくても、
+        period_start/period_endがmetric_columns（実際のメトリクス）として誤分類されないようにする。
+        """
+        resolved = list(non_metric_columns)
+        for col in (self.PERIOD_START_COLUMN, self.PERIOD_END_COLUMN):
+            if col in df.columns and col not in resolved:
+                resolved.append(col)
+        return resolved
+
     def _get_metric_columns(self, df: pd.DataFrame, non_metric_columns: list[str]) -> list[str]:
         """メトリックカラムを取得（non_metric_columns以外）
 
@@ -309,12 +334,15 @@ class ExperimentSaver:
             df: 統計メトリクスデータフレーム
                 - index: epoch
                 - 必須カラム: split, epoch, strategy_name
+                - 任意カラム: period_start, period_end（ウォークフォワード等、複数期間を区別する場合。
+                  両方揃えて指定すること。epoch番号は期間毎に1から振り直してよい）
                 - その他: メトリック名（任意）+ 任意条件カラム
         """
         data_type = "stats_metrics/strategy"
-        self._validate_stats_metrics(df, data_type, self.non_metric_columns_stats_strategy)
+        non_metric_columns = self._resolve_non_metric_columns(df, self.non_metric_columns_stats_strategy)
+        self._validate_stats_metrics(df, data_type, non_metric_columns)
         self._save_dataframe(df, data_type)
-        self._save_stats_meta(df, data_type, self.non_metric_columns_stats_strategy)
+        self._save_stats_meta(df, data_type, non_metric_columns)
 
     def save_stats_metrics_individual(self, df: pd.DataFrame) -> None:
         """個別条件毎統計メトリクス（エポック推移）を保存
@@ -323,12 +351,14 @@ class ExperimentSaver:
             df: 統計メトリクスデータフレーム
                 - index: epoch
                 - 必須カラム: split, epoch
+                - 任意カラム: period_start, period_end（save_stats_metrics_strategy参照）
                 - その他: メトリック名（任意）+ 任意条件カラム（model_id, random_seed等）
         """
         data_type = "stats_metrics/individual"
-        self._validate_stats_metrics(df, data_type, self.non_metric_columns_stats_individual)
+        non_metric_columns = self._resolve_non_metric_columns(df, self.non_metric_columns_stats_individual)
+        self._validate_stats_metrics(df, data_type, non_metric_columns)
         self._save_dataframe(df, data_type)
-        self._save_stats_meta(df, data_type, self.non_metric_columns_stats_individual)
+        self._save_stats_meta(df, data_type, non_metric_columns)
 
     def _save_text_file(self, category: str, content: str, filename: str) -> None:
         """指定カテゴリ配下にテキストファイルを保存

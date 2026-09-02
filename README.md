@@ -71,6 +71,10 @@ saver.save_all(
 ### 2. ダッシュボードの起動
 
 ```bash
+# uvを使用する場合（仮想環境を手動でactivateしなくてもよい）
+uv run streamlit run bt_log_vis_tool/app.py
+
+# pipでインストールした場合（先にその仮想環境をactivateしておくこと）
 streamlit run bt_log_vis_tool/app.py
 ```
 
@@ -100,12 +104,12 @@ python examples/example_save.py
 ### テスト実行
 
 ```bash
-pytest
+uv run pytest
 ```
 
 ### コードフォーマット
 
 ```bash
-ruff check .
-ruff format .
+uv run ruff check .
+uv run ruff format .
 ```

@@ -178,7 +178,7 @@ wheels = [
 [[package]]
 name = "bt-log-vis-tool"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "authlib" },
     { name = "gcsfs" },

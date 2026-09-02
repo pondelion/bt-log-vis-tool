@@ -13,7 +13,7 @@ import streamlit as st
 from bt_log_vis_tool.auth import render_auth_sidebar
 from bt_log_vis_tool.loader import ExperimentLoader
 from bt_log_vis_tool.storage import AnyPath as Path
-from bt_log_vis_tool.utils import calculate_cumulative_pnl, filter_by_conditions
+from bt_log_vis_tool.utils import calculate_stats, filter_by_conditions
 
 SPLIT_ORDER = ["train", "val", "test"]
 
@@ -148,19 +148,20 @@ def main():
     available_types = _get_available_data_types(loader)
     st.sidebar.info(f"利用可能なデータ: {', '.join(available_types)}")
 
-    # --- サイドバーにベストエポック判定設定（全タブ共通） ---
-    best_epoch = _setup_best_epoch_sidebar(loader)
-
     tabs = st.tabs(["統計メトリクス", "戦略時系列（資産曲線・ポジション）", "銘柄別時系列（資産曲線・ポジション）", "パラメータ", "コード", "サマリレポート"])
 
+    # 統計メトリクスタブ内の期間選択（該当する場合）を先に描画し、その選択結果をサイドバーの
+    # ベストエポック判定設定（判定 split/メトリクス/strategy。全タブ共通）に反映する
+    best_epoch, selected_period, best_epoch_by_period = _setup_best_epoch_sidebar(loader, tabs[0])
+
     with tabs[0]:
-        render_stats_tab(loader, best_epoch)
+        render_stats_tab(loader, best_epoch, selected_period)
 
     with tabs[1]:
-        render_timeseries_tab(loader, best_epoch)
+        render_timeseries_tab(loader, best_epoch, best_epoch_by_period)
 
     with tabs[2]:
-        render_ticker_tab(loader, best_epoch)
+        render_ticker_tab(loader, best_epoch, best_epoch_by_period)
 
     with tabs[3]:
         render_params_tab(loader, can_view_closed)
@@ -172,8 +173,66 @@ def main():
         render_report_tab(loader, can_view_closed)
 
 
-def _setup_best_epoch_sidebar(loader: ExperimentLoader) -> int | None:
-    """サイドバーにベストエポック判定設定を追加し、best_epochを返す"""
+def _render_period_selector_in_tab(stats_df: pd.DataFrame, container) -> tuple[pd.DataFrame, tuple | None]:
+    """stats_dfにperiod_start/period_endがあれば期間選択UIをcontainer（統計メトリクスタブ）内に
+    描画し、選択期間で絞り込んだstats_dfと選択期間(period_start, period_end)のタプルを返す
+    （period_start/period_endが無い場合は絞り込みせずそのまま返し、選択期間はNone）。
+
+    ベストエポック判定はこの期間選択の結果を使うが、判定 split/メトリクス/strategy 自体は
+    時系列タブとも共通のためサイドバーに残す（`_setup_best_epoch_sidebar`参照）。期間選択の
+    概念自体は統計メトリクスタブにしか無いため、ウィジェットの描画先だけをこのタブ内にする。
+    """
+    has_period = "period_start" in stats_df.columns and "period_end" in stats_df.columns
+
+    with container:
+        st.subheader("統計メトリクス")
+        if not has_period:
+            return stats_df, None
+
+        unique_periods = stats_df[["period_start", "period_end"]].drop_duplicates().sort_values("period_start")
+        period_list = list(zip(unique_periods["period_start"], unique_periods["period_end"], strict=True))
+        period_labels = [f"{pd.Timestamp(p[0]).date()} 〜 {pd.Timestamp(p[1]).date()}" for p in period_list]
+        selected_label = st.selectbox("期間（ウォークフォワード）", period_labels, index=len(period_labels) - 1, key="wf_period_select")
+
+    selected_period = period_list[period_labels.index(selected_label)]
+    filtered_df = stats_df[(stats_df["period_start"] == selected_period[0]) & (stats_df["period_end"] == selected_period[1])]
+    return filtered_df, selected_period
+
+
+def _compute_pnl_abs_sharpe(loader: ExperimentLoader) -> pd.DataFrame | None:
+    """pnl_pred_position/strategyの`pnl_abs`（絶対損益）から、stats_metricsと同じ
+    epoch/split/strategy_name（・period_start/period_end）粒度で年率Sharpe比を算出し、
+    `sharpe_ratio_abs`列を持つDataFrameを返す（stats_dfへの左結合用）。
+
+    既存のstats_metricsの`sharpe_ratio`は学習時に`pnl`（率）から計算されたもので、絶対損益
+    ベースの評価軸を持たない。絶対損益（`pnl_abs`）を目的変数として最適化する実験
+    （run0001_7等）では判定指標側もそれに揃えられないと、ベストエポック判定が実際の最適化対象と
+    ずれてしまう。stats_metrics側の再保存（学習スクリプトの再実行）無しに使えるよう、
+    pnl_pred_position側の生データから都度計算する。`pnl_abs`列が無ければNoneを返す。
+    """
+    strategy_df = _load_pnl_pred_position_strategy(loader)
+    if strategy_df is None or "pnl_abs" not in strategy_df.columns:
+        return None
+
+    group_cols = [c for c in ["period_start", "period_end", "split", "strategy_name", "epoch"] if c in strategy_df.columns]
+    if "epoch" not in group_cols or "split" not in group_cols:
+        return None
+
+    records = []
+    for keys, group in strategy_df.groupby(group_cols, dropna=False):
+        keys = keys if isinstance(keys, tuple) else (keys,)
+        record = dict(zip(group_cols, keys, strict=True))
+        record["sharpe_ratio_abs"] = calculate_stats(group["pnl_abs"])["sharpe_ratio"]
+        records.append(record)
+    return pd.DataFrame(records)
+
+
+def _load_stats_with_derived_metrics(loader: ExperimentLoader) -> tuple[pd.DataFrame, str, list[str], list[str]] | None:
+    """stats_metrics/strategy（無ければindividual）を読み込み、`_compute_pnl_abs_sharpe`で
+    算出した`sharpe_ratio_abs`（絶対損益ベースの年率Sharpe比）を追加でマージした上で
+    (stats_df, stats_type, non_metric_columns, metric_cols) を返す。stats_metricsデータが
+    無ければNone。stats_metrics/individualはstrategy_name粒度が無く、strategy粒度のpnl_abs由来
+    指標とは結合できないためマージ対象外（stats_metrics/strategyの場合のみ結合する）。"""
     stats_df = _load_stats_metrics_strategy(loader)
     stats_type = "stats_metrics/strategy"
     if stats_df is None:
@@ -182,23 +241,57 @@ def _setup_best_epoch_sidebar(loader: ExperimentLoader) -> int | None:
     if stats_df is None:
         return None
 
-    if stats_df.index.name == "epoch":
-        stats_df = stats_df.reset_index(drop="epoch" in stats_df.columns)
-
     meta = _load_meta(loader, stats_type)
     if meta is not None:
         non_metric_columns = meta.get("non_metric_columns", ["split"])
-        metric_cols = meta.get("metric_columns", [])
+        metric_cols = list(meta.get("metric_columns", []))
     else:
         non_metric_columns = ["split"]
         metric_cols = [c for c in stats_df.columns if c not in non_metric_columns]
 
-    has_strategy = "strategy_name" in non_metric_columns and "strategy_name" in stats_df.columns
-    splits = sort_splits(stats_df["split"].unique().tolist()) if "split" in stats_df.columns else []
-    strategies = sorted(stats_df["strategy_name"].unique().tolist()) if has_strategy else []
+    if stats_df.index.name == "epoch":
+        stats_df = stats_df.reset_index(drop="epoch" in stats_df.columns)
+
+    if stats_type == "stats_metrics/strategy":
+        derived_df = _compute_pnl_abs_sharpe(loader)
+        if derived_df is not None:
+            merge_keys = [c for c in ["period_start", "period_end", "split", "strategy_name", "epoch"] if c in stats_df.columns and c in derived_df.columns]
+            if merge_keys:
+                stats_df = stats_df.merge(derived_df, on=merge_keys, how="left")
+                if "sharpe_ratio_abs" not in metric_cols:
+                    metric_cols = [*metric_cols, "sharpe_ratio_abs"]
+
+    return stats_df, stats_type, non_metric_columns, metric_cols
+
+
+def _setup_best_epoch_sidebar(loader: ExperimentLoader, period_container) -> tuple[int | None, tuple | None, dict]:
+    """統計メトリクスタブ内の期間選択（該当する場合）と、サイドバーのベストエポック判定設定
+    （判定 split/メトリクス/strategy。全タブ共通）から (best_epoch, selected_period, best_epoch_by_period)
+    を算出する。
+
+    Returns:
+        best_epoch: 統計メトリクスタブで選択中の期間（該当する場合）のベストエポック
+        selected_period: 統計メトリクスタブで選択中の期間 (period_start, period_end)。期間の概念が
+            無ければNone
+        best_epoch_by_period: 全期間ぶんの {(period_start, period_end): best_epoch} 辞書
+            （ベストエポックは各期間に1対1で紐づくため。期間の概念が無い場合は {None: best_epoch}
+            の1エントリ辞書。時系列/銘柄別時系列タブが期間ごとに個別のデフォルトエポックを
+            出せるようにするために使う）
+    """
+    loaded = _load_stats_with_derived_metrics(loader)
+    if loaded is None:
+        return None, None, {}
+    stats_df, _stats_type, non_metric_columns, metric_cols = loaded
+
+    full_stats_df = stats_df
+    _, selected_period = _render_period_selector_in_tab(full_stats_df, period_container)
+
+    has_strategy = "strategy_name" in non_metric_columns and "strategy_name" in full_stats_df.columns
+    splits = sort_splits(full_stats_df["split"].unique().tolist()) if "split" in full_stats_df.columns else []
+    strategies = sorted(full_stats_df["strategy_name"].unique().tolist()) if has_strategy else []
 
     if not splits or not metric_cols:
-        return None
+        return None, selected_period, {}
 
     with st.sidebar:
         st.markdown("---")
@@ -219,47 +312,48 @@ def _setup_best_epoch_sidebar(loader: ExperimentLoader) -> int | None:
         else:
             best_strategy = None
 
-    best_epoch = None
-    if "epoch" in stats_df.columns:
-        filtered = filter_by_conditions(stats_df, split=best_split)
+    def _compute_best_epoch(df: pd.DataFrame) -> int | None:
+        if "epoch" not in df.columns:
+            return None
+        filtered = filter_by_conditions(df, split=best_split)
         if has_strategy and best_strategy:
             filtered = filter_by_conditions(filtered, strategy_name=best_strategy)
-        if len(filtered) > 0:
-            epoch_means = filtered.groupby("epoch")[best_metric].mean()
-            best_epoch = int(epoch_means.idxmax())
+        if len(filtered) == 0:
+            return None
+        epoch_means = filtered.groupby("epoch")[best_metric].mean()
+        return int(epoch_means.idxmax())
 
-    st.sidebar.info(
-        f"ベストエポック: {best_epoch}\n"
-        f"(split={best_split}, {best_metric}"
-        + (f", {best_strategy}" if best_strategy else "")
-        + ")"
-    )
-    return best_epoch
+    has_period = "period_start" in full_stats_df.columns and "period_end" in full_stats_df.columns
+    best_epoch_by_period: dict = {}
+    if has_period:
+        unique_periods = full_stats_df[["period_start", "period_end"]].drop_duplicates().sort_values("period_start")
+        for p_start, p_end in zip(unique_periods["period_start"], unique_periods["period_end"], strict=True):
+            period_df = full_stats_df[(full_stats_df["period_start"] == p_start) & (full_stats_df["period_end"] == p_end)]
+            best_epoch_by_period[(p_start, p_end)] = _compute_best_epoch(period_df)
+        best_epoch = best_epoch_by_period.get(selected_period)
+    else:
+        best_epoch = _compute_best_epoch(full_stats_df)
+        best_epoch_by_period = {None: best_epoch}
+
+    return best_epoch, selected_period, best_epoch_by_period
 
 
-def render_stats_tab(loader: ExperimentLoader, best_epoch: int | None):
-    """統計メトリクスタブを描画"""
-    st.subheader("統計メトリクス")
+def render_stats_tab(loader: ExperimentLoader, best_epoch: int | None, selected_period: tuple | None = None):
+    """統計メトリクスタブを描画
 
-    stats_df = _load_stats_metrics_strategy(loader)
-    data_type = "stats_metrics/strategy"
-    if stats_df is None:
-        stats_df = _load_stats_metrics_individual(loader)
-        data_type = "stats_metrics/individual"
-    if stats_df is None:
+    Args:
+        selected_period: 指定時、(period_start, period_end) のタプルでそのウォークフォワード
+            期間のデータのみに絞り込む（統計メトリクスタブ内の期間選択UIの結果。
+            `_setup_best_epoch_sidebar`/`_render_period_selector_in_tab`参照）
+    """
+    loaded = _load_stats_with_derived_metrics(loader)
+    if loaded is None:
         st.warning("統計メトリクスデータが見つかりません")
         return
+    stats_df, _data_type, non_metric_columns, metric_cols = loaded
 
-    meta = _load_meta(loader, data_type)
-    if meta is not None:
-        non_metric_columns = meta.get("non_metric_columns", ["split"])
-        metric_cols = meta.get("metric_columns", [])
-    else:
-        non_metric_columns = ["split"]
-        metric_cols = [col for col in stats_df.columns if col not in non_metric_columns]
-
-    if stats_df.index.name == "epoch":
-        stats_df = stats_df.reset_index(drop="epoch" in stats_df.columns)
+    if selected_period is not None:
+        stats_df = stats_df[(stats_df["period_start"] == selected_period[0]) & (stats_df["period_end"] == selected_period[1])]
 
     has_strategy = "strategy_name" in non_metric_columns and "strategy_name" in stats_df.columns
     splits = sort_splits(stats_df["split"].unique().tolist()) if "split" in stats_df.columns else []
@@ -278,7 +372,7 @@ def render_stats_tab(loader: ExperimentLoader, best_epoch: int | None):
     selected_splits = []
     for i, split in enumerate(splits):
         with split_check_cols[i]:
-            if st.checkbox(split, value=True, key=f"stats_split_check_{split}"):
+            if st.checkbox(split, value=(split != "train"), key=f"stats_split_check_{split}"):
                 selected_splits.append(split)
 
     if not selected_splits:
@@ -387,8 +481,15 @@ def render_stats_tab(loader: ExperimentLoader, best_epoch: int | None):
                 st.dataframe(split_data[metric_cols], use_container_width=True)
 
 
-def render_timeseries_tab(loader: ExperimentLoader, best_epoch: int | None):
-    """時系列（資産曲線・ポジション）タブを描画"""
+def render_timeseries_tab(loader: ExperimentLoader, best_epoch: int | None, best_epoch_by_period: dict | None = None):
+    """時系列（資産曲線・ポジション）タブを描画
+
+    ウォークフォワード等でperiod_start/period_end列がある場合、期間ごとに個別のエポック選択
+    セレクトボックスを並べる（ベストエポックは各期間に1対1で紐づき、期間によって異なりうるため、
+    単一のエポック選択を全期間へ一律適用するのは不適切）。各セレクトボックスのデフォルトは
+    その期間自身のベストエポック（best_epoch_by_period）。期間選択の概念（どの期間を表示するか
+    の絞り込み）自体は統計メトリクスタブ側にのみ存在し、本タブは常に全期間を表示する。
+    """
     st.subheader("時系列データ可視化")
 
     strategy_df = _load_pnl_pred_position_strategy(loader)
@@ -405,29 +506,78 @@ def render_timeseries_tab(loader: ExperimentLoader, best_epoch: int | None):
 
     condition_columns = meta.get("condition_columns", [])
     value_columns = meta.get("value_columns", [])
+    best_epoch_by_period = best_epoch_by_period or {}
 
-    # エポック選択（サイドバーで算出されたベストエポックをデフォルトに）
-    if "epoch" in condition_columns:
-        available_epochs = sorted(strategy_df["epoch"].unique().tolist())
-    else:
-        available_epochs = []
+    has_period = "period_start" in strategy_df.columns and "period_end" in strategy_df.columns
 
-    if available_epochs:
-        default_idx = available_epochs.index(best_epoch) if best_epoch in available_epochs else 0
-        epoch_label = f"表示エポック (ベストエポック: {best_epoch})" if best_epoch is not None else "表示エポック"
-        epoch = st.selectbox(epoch_label, available_epochs, index=default_idx)
-    else:
-        epoch = None
+    if has_period and "epoch" in condition_columns:
+        unique_periods = strategy_df[["period_start", "period_end"]].drop_duplicates().sort_values("period_start")
+        period_list = list(zip(unique_periods["period_start"], unique_periods["period_end"], strict=True))
 
-    # エポックでフィルタリング
-    if "epoch" in condition_columns:
-        epoch_data = filter_by_conditions(strategy_df, epoch=epoch)
+        st.markdown("**期間ごとの表示エポック:**")
+        epoch_cols = st.columns(len(period_list))
+        chosen_epoch_by_period: dict = {}
+        for col, (p_start, p_end) in zip(epoch_cols, period_list, strict=True):
+            with col:
+                period_df = strategy_df[(strategy_df["period_start"] == p_start) & (strategy_df["period_end"] == p_end)]
+                period_epochs = sorted(period_df["epoch"].unique().tolist())
+                period_best = best_epoch_by_period.get((p_start, p_end))
+                default_idx = period_epochs.index(period_best) if period_best in period_epochs else 0
+                label = f"{pd.Timestamp(p_start).date()} 〜 {pd.Timestamp(p_end).date()}"
+                if period_best is not None:
+                    label += f" (best:{period_best})"
+                # keyにperiod_bestを含めることで、判定設定変更でおすすめエポックが変わった際に
+                # ウィジェットを再生成させ、新しいデフォルトへ追従させる（Streamlitはkeyが同じだと
+                # indexを無視してsession_stateの古い選択値を保持し続けるため）
+                chosen_epoch_by_period[(p_start, p_end)] = st.selectbox(
+                    label, period_epochs, index=default_idx, key=f"ts_epoch_{p_start}_{p_end}_{period_best}"
+                )
+
+        epoch_data = pd.concat(
+            [
+                strategy_df[(strategy_df["period_start"] == p_start) & (strategy_df["period_end"] == p_end) & (strategy_df["epoch"] == chosen_epoch)]
+                for (p_start, p_end), chosen_epoch in chosen_epoch_by_period.items()
+            ]
+        )
+        epoch = " / ".join(f"{pd.Timestamp(p_start).date()}:{e}" for (p_start, p_end), e in chosen_epoch_by_period.items())
     else:
-        epoch_data = strategy_df.copy()
+        # エポック選択（サイドバーで算出されたベストエポックをデフォルトに）
+        if "epoch" in condition_columns:
+            available_epochs = sorted(strategy_df["epoch"].unique().tolist())
+        else:
+            available_epochs = []
+
+        if available_epochs:
+            default_idx = available_epochs.index(best_epoch) if best_epoch in available_epochs else 0
+            epoch_label = f"表示エポック (ベストエポック: {best_epoch})" if best_epoch is not None else "表示エポック"
+            epoch = st.selectbox(epoch_label, available_epochs, index=default_idx, key=f"ts_epoch_single_{best_epoch}")
+        else:
+            epoch = None
+
+        # エポックでフィルタリング
+        if "epoch" in condition_columns:
+            epoch_data = filter_by_conditions(strategy_df, epoch=epoch)
+        else:
+            epoch_data = strategy_df.copy()
 
     if len(epoch_data) == 0:
         st.warning(f"エポック {epoch} のデータが見つかりません")
         return
+
+    # Split選択チェックボックス（train系はデフォルト非表示）
+    if "split" in epoch_data.columns:
+        splits_all = sort_splits(epoch_data["split"].unique().tolist())
+        st.markdown("**表示するSplit:**")
+        split_check_cols = st.columns(max(len(splits_all), 1))
+        selected_splits = []
+        for i, split in enumerate(splits_all):
+            with split_check_cols[i]:
+                if st.checkbox(split, value=(split != "train"), key=f"ts_split_check_{split}"):
+                    selected_splits.append(split)
+        if not selected_splits:
+            st.info("表示するsplitを選択してください")
+            return
+        epoch_data = epoch_data[epoch_data["split"].isin(selected_splits)]
 
     # 資産曲線の描画
     if "pnl" in value_columns:
@@ -446,6 +596,35 @@ def render_timeseries_tab(loader: ExperimentLoader, best_epoch: int | None):
         render_position(epoch_data, epoch, condition_columns, cumsum=pos_cumsum)
 
 
+def _build_period_traces(entity_df: pd.DataFrame, split: str | None, value_column: str, cumsum: bool) -> list[tuple]:
+    """splitとperiod_start/period_end列の有無に応じて描画用トレース群 (x, y, ラベル接尾辞) を構築する。
+
+    period_start/period_end列が無い場合は従来通り単一トレース。ある場合、train/val（≒非test）は
+    期間間で日付が重複しうるため期間毎に別トレースへ分け、testは重複が無い前提で期間を跨いで
+    日時順に連結してから単一トレースにまとめる（cumsumはこの連結後の系列に対して行う）。
+    """
+    if len(entity_df) == 0 or value_column not in entity_df.columns:
+        return []
+
+    has_period = "period_start" in entity_df.columns and "period_end" in entity_df.columns
+    if not has_period or split == "test":
+        sorted_df = entity_df.sort_index()
+        y = sorted_df[value_column].cumsum() if cumsum else sorted_df[value_column]
+        return [(sorted_df.index, y, "")]
+
+    traces = []
+    period_starts = sorted(entity_df["period_start"].unique())
+    multiple = len(period_starts) > 1
+    for p_start in period_starts:
+        p_df = entity_df[entity_df["period_start"] == p_start].sort_index()
+        if len(p_df) == 0:
+            continue
+        y = p_df[value_column].cumsum() if cumsum else p_df[value_column]
+        label = f" [{pd.Timestamp(p_start).date()}〜]" if multiple else ""
+        traces.append((p_df.index, y, label))
+    return traces
+
+
 def render_equity_curve(df, epoch, condition_columns, pnl_column: str = "pnl", chart_title: str = "累積PnL"):
     """資産曲線を描画（split毎に列を分けてy軸スケールを独立させる）
 
@@ -455,6 +634,9 @@ def render_equity_curve(df, epoch, condition_columns, pnl_column: str = "pnl", c
         condition_columns: 条件カラムのリスト
         pnl_column: 累積対象のカラム名（"pnl"=率、"pnl_abs"=絶対損益）
         chart_title: グラフタイトルに使う名称
+
+    period_start/period_end列がある場合、test以外のsplitは期間毎に別トレースとして重ねて表示し、
+    testは期間を跨いで連結してから単一トレースでcumsumする。
     """
     if "strategy_name" not in condition_columns:
         st.warning("strategy_nameカラムが見つかりません")
@@ -473,15 +655,14 @@ def render_equity_curve(df, epoch, condition_columns, pnl_column: str = "pnl", c
         for j, strategy in enumerate(strategies):
             strategy_data = filter_by_conditions(split_data, strategy_name=strategy)
 
-            if len(strategy_data) > 0 and pnl_column in strategy_data.columns:
-                cum_pnl = calculate_cumulative_pnl(strategy_data[pnl_column])
-
+            for x, y, label in _build_period_traces(strategy_data, split, pnl_column, cumsum=True):
                 fig.add_trace(
                     go.Scatter(
-                        x=strategy_data.index,
-                        y=cum_pnl,
+                        x=x,
+                        y=y,
                         mode="lines",
-                        name=strategy,
+                        name=f"{strategy}{label}",
+                        legendgroup=strategy,
                         line=dict(color=colors[j % len(colors)]),
                     )
                 )
@@ -498,7 +679,11 @@ def render_equity_curve(df, epoch, condition_columns, pnl_column: str = "pnl", c
 
 
 def render_position(df, epoch, condition_columns, cumsum: bool = False):
-    """ポジション時系列を描画（split毎に列を分けてy軸スケールを独立させる）"""
+    """ポジション時系列を描画（split毎に列を分けてy軸スケールを独立させる）
+
+    period_start/period_end列がある場合、test以外のsplitは期間毎に別トレースとして重ねて表示し、
+    testは期間を跨いで連結してから単一トレースにする。
+    """
     if "strategy_name" not in condition_columns:
         st.warning("strategy_nameカラムが見つかりません")
         return
@@ -520,14 +705,14 @@ def render_position(df, epoch, condition_columns, cumsum: bool = False):
         for j, strategy in enumerate(strategies):
             strategy_data = filter_by_conditions(split_data, strategy_name=strategy)
 
-            if len(strategy_data) > 0:
-                y = strategy_data["position"].cumsum() if cumsum else strategy_data["position"]
+            for x, y, label in _build_period_traces(strategy_data, split, "position", cumsum=cumsum):
                 fig.add_trace(
                     go.Scatter(
-                        x=strategy_data.index,
+                        x=x,
                         y=y,
                         mode="lines",
-                        name=strategy,
+                        name=f"{strategy}{label}",
+                        legendgroup=strategy,
                         line=dict(color=colors[j % len(colors)]),
                     )
                 )
@@ -544,7 +729,11 @@ def render_position(df, epoch, condition_columns, cumsum: bool = False):
 
 
 def render_ticker_equity_curve(epoch_df, display_splits, selected_tickers, colors, pnl_column: str = "pnl", chart_title: str = "累積PnL"):
-    """銘柄別の累積損益曲線を描画（split毎に列を分ける）"""
+    """銘柄別の累積損益曲線を描画（split毎に列を分ける）
+
+    period_start/period_end列がある場合、test以外のsplitは期間毎に別トレースとして重ねて表示し、
+    testは期間を跨いで連結してから単一トレースでcumsumする。
+    """
     graph_cols = st.columns(len(display_splits))
     for i, split in enumerate(display_splits):
         with graph_cols[i]:
@@ -552,16 +741,15 @@ def render_ticker_equity_curve(epoch_df, display_splits, selected_tickers, color
             fig = go.Figure()
             for j, ticker in enumerate(selected_tickers):
                 t_df = filter_by_conditions(split_df, ticker=ticker)
-                if len(t_df) == 0 or pnl_column not in t_df.columns:
-                    continue
-                cum_pnl = calculate_cumulative_pnl(t_df[pnl_column])
-                fig.add_trace(go.Scatter(
-                    x=t_df.index,
-                    y=cum_pnl,
-                    mode="lines",
-                    name=ticker,
-                    line=dict(color=colors[j % len(colors)]),
-                ))
+                for x, y, label in _build_period_traces(t_df, split, pnl_column, cumsum=True):
+                    fig.add_trace(go.Scatter(
+                        x=x,
+                        y=y,
+                        mode="lines",
+                        name=f"{ticker}{label}",
+                        legendgroup=ticker,
+                        line=dict(color=colors[j % len(colors)]),
+                    ))
             fig.update_layout(
                 title=f"{chart_title} ({split})" if split else chart_title,
                 xaxis_title="日時",
@@ -573,8 +761,12 @@ def render_ticker_equity_curve(epoch_df, display_splits, selected_tickers, color
             st.plotly_chart(fig, use_container_width=True)
 
 
-def render_ticker_tab(loader: ExperimentLoader, best_epoch: int | None):
-    """銘柄別時系列タブを描画"""
+def render_ticker_tab(loader: ExperimentLoader, best_epoch: int | None, best_epoch_by_period: dict | None = None):
+    """銘柄別時系列タブを描画
+
+    ウォークフォワード等でperiod_start/period_end列がある場合、期間ごとに個別のエポック選択
+    セレクトボックスを並べる（render_timeseries_tabと同じ方針。ベストエポックは期間毎に異なりうる）。
+    """
     st.subheader("銘柄別時系列")
 
     # 銘柄別データはファイルサイズが大きくGCSからのダウンロードも重いため、
@@ -596,17 +788,52 @@ def render_ticker_tab(loader: ExperimentLoader, best_epoch: int | None):
 
     condition_columns = meta.get("condition_columns", [])
     value_columns = meta.get("value_columns", [])
+    best_epoch_by_period = best_epoch_by_period or {}
 
-    # エポック選択
-    if "epoch" in condition_columns:
-        available_epochs = sorted(ticker_df["epoch"].unique().tolist())
-        default_idx = available_epochs.index(best_epoch) if best_epoch in available_epochs else 0
-        epoch_label = f"表示エポック (ベストエポック: {best_epoch})" if best_epoch is not None else "表示エポック"
-        epoch = st.selectbox(epoch_label, available_epochs, index=default_idx, key="ticker_epoch")
-        epoch_df = filter_by_conditions(ticker_df, epoch=epoch)
+    has_period = "period_start" in ticker_df.columns and "period_end" in ticker_df.columns
+
+    if has_period and "epoch" in condition_columns:
+        unique_periods = ticker_df[["period_start", "period_end"]].drop_duplicates().sort_values("period_start")
+        period_list = list(zip(unique_periods["period_start"], unique_periods["period_end"], strict=True))
+
+        st.markdown("**期間ごとの表示エポック:**")
+        epoch_cols = st.columns(len(period_list))
+        chosen_epoch_by_period: dict = {}
+        for col, (p_start, p_end) in zip(epoch_cols, period_list, strict=True):
+            with col:
+                period_df = ticker_df[(ticker_df["period_start"] == p_start) & (ticker_df["period_end"] == p_end)]
+                period_epochs = sorted(period_df["epoch"].unique().tolist())
+                period_best = best_epoch_by_period.get((p_start, p_end))
+                default_idx = period_epochs.index(period_best) if period_best in period_epochs else 0
+                label = f"{pd.Timestamp(p_start).date()} 〜 {pd.Timestamp(p_end).date()}"
+                if period_best is not None:
+                    label += f" (best:{period_best})"
+                # keyにperiod_bestを含める理由はrender_timeseries_tabと同じ（判定設定変更への追従）
+                chosen_epoch_by_period[(p_start, p_end)] = st.selectbox(
+                    label, period_epochs, index=default_idx, key=f"ticker_epoch_{p_start}_{p_end}_{period_best}"
+                )
+
+        epoch_df = pd.concat(
+            [
+                ticker_df[(ticker_df["period_start"] == p_start) & (ticker_df["period_end"] == p_end) & (ticker_df["epoch"] == chosen_epoch)]
+                for (p_start, p_end), chosen_epoch in chosen_epoch_by_period.items()
+            ]
+        )
+        epoch = " / ".join(f"{pd.Timestamp(p_start).date()}:{e}" for (p_start, p_end), e in chosen_epoch_by_period.items())
     else:
-        epoch_df = ticker_df.copy()
-        epoch = None
+        # エポック選択
+        if "epoch" in condition_columns:
+            available_epochs = sorted(ticker_df["epoch"].unique().tolist())
+            if not available_epochs:
+                st.warning("エポックが見つかりません")
+                return
+            default_idx = available_epochs.index(best_epoch) if best_epoch in available_epochs else 0
+            epoch_label = f"表示エポック (ベストエポック: {best_epoch})" if best_epoch is not None else "表示エポック"
+            epoch = st.selectbox(epoch_label, available_epochs, index=default_idx, key=f"ticker_epoch_single_{best_epoch}")
+            epoch_df = filter_by_conditions(ticker_df, epoch=epoch)
+        else:
+            epoch_df = ticker_df.copy()
+            epoch = None
 
     if len(epoch_df) == 0:
         st.warning(f"エポック {epoch} のデータが見つかりません")
@@ -620,7 +847,7 @@ def render_ticker_tab(loader: ExperimentLoader, best_epoch: int | None):
         split_cols = st.columns(max(len(splits), 1))
         for i, split in enumerate(splits):
             with split_cols[i]:
-                if st.checkbox(split, value=True, key=f"ticker_split_{split}"):
+                if st.checkbox(split, value=(split != "train"), key=f"ticker_split_{split}"):
                     selected_splits.append(split)
     else:
         selected_splits = []
@@ -664,15 +891,15 @@ def render_ticker_tab(loader: ExperimentLoader, best_epoch: int | None):
                 fig = go.Figure()
                 for j, ticker in enumerate(selected_tickers):
                     t_df = filter_by_conditions(split_df, ticker=ticker)
-                    if len(t_df) == 0:
-                        continue
-                    fig.add_trace(go.Scatter(
-                        x=t_df.index,
-                        y=t_df["position"].cumsum() if ticker_pos_cumsum else t_df["position"],
-                        mode="lines",
-                        name=ticker,
-                        line=dict(color=colors[j % len(colors)]),
-                    ))
+                    for x, y, label in _build_period_traces(t_df, split, "position", cumsum=ticker_pos_cumsum):
+                        fig.add_trace(go.Scatter(
+                            x=x,
+                            y=y,
+                            mode="lines",
+                            name=f"{ticker}{label}",
+                            legendgroup=ticker,
+                            line=dict(color=colors[j % len(colors)]),
+                        ))
                 pos_ylabel = "ポジション累積" if ticker_pos_cumsum else "ポジション"
                 pos_title = f"{pos_ylabel} ({split})" if split else pos_ylabel
                 fig.update_layout(
@@ -695,15 +922,15 @@ def render_ticker_tab(loader: ExperimentLoader, best_epoch: int | None):
                 fig = go.Figure()
                 for j, ticker in enumerate(selected_tickers):
                     t_df = filter_by_conditions(split_df, ticker=ticker)
-                    if len(t_df) == 0:
-                        continue
-                    fig.add_trace(go.Scatter(
-                        x=t_df.index,
-                        y=t_df["pred"],
-                        mode="lines",
-                        name=ticker,
-                        line=dict(color=colors[j % len(colors)]),
-                    ))
+                    for x, y, label in _build_period_traces(t_df, split, "pred", cumsum=False):
+                        fig.add_trace(go.Scatter(
+                            x=x,
+                            y=y,
+                            mode="lines",
+                            name=f"{ticker}{label}",
+                            legendgroup=ticker,
+                            line=dict(color=colors[j % len(colors)]),
+                        ))
                 fig.update_layout(
                     title=f"予測値 ({split})" if split else "予測値",
                     xaxis_title="日時",
