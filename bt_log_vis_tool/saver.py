@@ -28,6 +28,7 @@ class ExperimentSaver:
     PRED_COLUMN = "pred"
     POSITION_COLUMN = "position"
     PNL_ABS_COLUMN = "pnl_abs"  # 絶対損益（通貨単位そのまま。pnlが率であるのに対し、こちらは価格差分の合算値）
+    ENTRY_PRICE_COLUMN = "entry_price"  # エントリー価格そのもの（仕様書2.1.1節。pnl_absは価格の差分のため絶対水準の復元に必要）
 
     # 必須その他条件カラム
     REQUIRED_COLUMNS_TICKER = ["split", "epoch", "ticker"]
@@ -95,7 +96,7 @@ class ExperimentSaver:
         return self.run_dir / data_type
 
     def _get_condition_columns(self, df: pd.DataFrame) -> list[str]:
-        """その他条件カラムを取得（pnl/pred/position/pnl_abs以外）
+        """その他条件カラムを取得（pnl/pred/position/pnl_abs/entry_price以外）
 
         Args:
             df: DataFrame
@@ -103,7 +104,7 @@ class ExperimentSaver:
         Returns:
             条件カラムのリスト
         """
-        value_columns = {self.PNL_COLUMN, self.PRED_COLUMN, self.POSITION_COLUMN, self.PNL_ABS_COLUMN}
+        value_columns = {self.PNL_COLUMN, self.PRED_COLUMN, self.POSITION_COLUMN, self.PNL_ABS_COLUMN, self.ENTRY_PRICE_COLUMN}
         condition_columns = [col for col in df.columns if col not in value_columns]
         return condition_columns
 
@@ -198,7 +199,9 @@ class ExperimentSaver:
         meta_path = save_dir / "meta.yaml"
 
         condition_columns = self._get_condition_columns(df)
-        value_columns = [col for col in [self.PNL_COLUMN, self.PRED_COLUMN, self.POSITION_COLUMN, self.PNL_ABS_COLUMN] if col in df.columns]
+        value_columns = [
+            col for col in [self.PNL_COLUMN, self.PRED_COLUMN, self.POSITION_COLUMN, self.PNL_ABS_COLUMN, self.ENTRY_PRICE_COLUMN] if col in df.columns
+        ]
 
         meta = {"condition_columns": condition_columns, "value_columns": value_columns}
 
@@ -235,8 +238,9 @@ class ExperimentSaver:
             df: データフレーム
                 - index: datetime
                 - 必須カラム: split, epoch, ticker
-                - 任意カラム: pnl, pred, position, pnl_abs, その他条件カラム（random_seed等）
-                - ※ただしpnl/pred/position/pnl_absの内最低1つはカラムに存在すること
+                - 任意カラム: pnl, pred, position, pnl_abs, entry_price, その他条件カラム（random_seed等）
+                - ※ただしpnl/pred/position/pnl_absの内最低1つはカラムに存在すること（entry_priceは
+                  この最低1つには数えない。あくまでpnl_abs等を補う付加的な値カラム）
         """
         data_type = "pnl_pred_position/ticker"
         self._validate_pnl_pred_position(df, data_type, self.REQUIRED_COLUMNS_TICKER, [], at_least_one_value=True)
