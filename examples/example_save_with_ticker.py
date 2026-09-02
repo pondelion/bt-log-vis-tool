@@ -170,7 +170,7 @@ def main():
     saver.save_all(
         pnl_pred_position_ticker=pnl_pred_position_ticker_df,
         pnl_pred_position_strategy=pnl_pred_position_strategy_df,
-        stats_metrics_strategy=stats_strategy_df,
+        metrics_history_strategy=stats_strategy_df,
         params=params,
         code=code,
         code_filename="experiment.py",

@@ -18,7 +18,7 @@
 | `epoch` | 学習エポック番号（整数） |
 | `strategy_name` | 戦略名（例: `longshort`, `long_only`）。ベンチマーク系列（buy&hold等、モデル予測に依存しない参照系列）は `bm_` プレフィックスを付ける（例: `bm_buy_and_hold`） |
 | `ticker` | 銘柄コード |
-| `non_metric_columns` | 統計メトリクスDFにおける条件カラム（メトリック以外） |
+| `non_metric_columns` | メトリクス学習推移DFにおける条件カラム（メトリック以外） |
 | open / closed | ファイル単位の公開区分。openは誰でも閲覧可、closedはログイン済み・許可リスト登録者のみ閲覧可 |
 
 ---
@@ -39,11 +39,11 @@
         │   └── strategy/            # 戦略別時系列 (必須)
         │       ├── data.parquet
         │       └── meta.yaml
-        ├── stats_metrics/
-        │   ├── strategy/            # 戦略別統計メトリクス (必須)
+        ├── metrics_history/
+        │   ├── strategy/            # 戦略別メトリクス学習推移 (必須)
         │   │   ├── data.parquet
         │   │   └── meta.yaml        # non_metric_columns / metric_columns を記録
-        │   └── individual/          # 個別条件別統計メトリクス (optional)
+        │   └── individual/          # 個別条件別メトリクス学習推移 (optional)
         │       ├── data.parquet
         │       └── meta.yaml
         ├── params/                  # ハイパーパラメータ (optional, open/closed対応)
@@ -60,7 +60,7 @@
             └── {filename}.md        # サブディレクトリ無し = closed扱い
 ```
 
-`pnl_pred_position/` と `stats_metrics/` にはopen/closedの区分は無く、存在すれば常に誰でも閲覧できる（実験の性能データ自体は公開してよい、コード・パラメータ・レポートだけを機密扱いできる、という想定）。
+`pnl_pred_position/` と `metrics_history/` にはopen/closedの区分は無く、存在すれば常に誰でも閲覧できる（実験の性能データ自体は公開してよい、コード・パラメータ・レポートだけを機密扱いできる、という想定）。
 
 ---
 
@@ -75,7 +75,7 @@
 - 条件カラムの組み合わせでgroupbyしたとき、index（日時）が一意になること（バリデーションあり）
 - `pnl` は率（リターン）、`pnl_abs` は絶対損益（価格差分の合算値。通貨単位はデータ依存でtool側は関知しない）。両方保存してもよい
 
-**ウォークフォワード等、期間間で日時が重複しうる場合**は、任意カラム`period_start`/`period_end`を追加できる（`strategy`/`ticker`両方対応、意味・ペア必須の制約は2.2節の`stats_metrics`と同じ）。条件カラムの一意性チェックは全カラムを対象に自動で行われる汎用的な仕組みのため、`period_start`/`period_end`を含めるだけで「同じ`split`/`epoch`/`strategy_name`でも期間が違えば日時重複してよい」という判定になる（保存側の追加実装は不要）。**期間を跨いで日時が重複しうるのに`period_start`/`period_end`を付け忘れた場合は、従来通り`ValidationError`になる**（気付かず不正なデータを保存する事故を防ぐため、明示的にエラーで落とす）。
+**ウォークフォワード等、期間間で日時が重複しうる場合**は、任意カラム`period_start`/`period_end`を追加できる（`strategy`/`ticker`両方対応、意味・ペア必須の制約は2.2節の`metrics_history`と同じ）。条件カラムの一意性チェックは全カラムを対象に自動で行われる汎用的な仕組みのため、`period_start`/`period_end`を含めるだけで「同じ`split`/`epoch`/`strategy_name`でも期間が違えば日時重複してよい」という判定になる（保存側の追加実装は不要）。**期間を跨いで日時が重複しうるのに`period_start`/`period_end`を付け忘れた場合は、従来通り`ValidationError`になる**（気付かず不正なデータを保存する事故を防ぐため、明示的にエラーで落とす）。
 
 #### 2.1.1. 銘柄別時系列 `pnl_pred_position/ticker` *(optional)*
 
@@ -166,14 +166,14 @@ longshort ポートフォリオ・シードアンサンブル等の戦略ごと�
 
 ---
 
-### 2.2. 統計メトリクス
+### 2.2. メトリクス学習推移
 
 エポックごとのパフォーマンス指標（annual return / sharpe ratio 等）を保存する。
 メトリクス名は実験ごとに異なるため、条件カラムを `non_metric_columns` として `meta.yaml` に記録し、残りをメトリクスカラムとして扱う。
 
 **ウォークフォワード等、複数期間を区別したい場合**は、任意カラム`period_start`/`period_end`を追加できる（`strategy`/`individual`両方対応、必ず両方揃えて指定する。片方だけは`ValidationError`）。値は「そのepoch行が属する期間全体（学習開始日〜テスト終了日）」を表す文字列。epoch番号は期間毎に1から振り直してよい（`period_start`/`period_end`の組で期間を区別するため、`split`/`epoch`/`strategy_name`だけでは複数期間間で衝突しても問題ない）。指定すると、ダッシュボードのメトリクス学習推移タブ内に期間選択UIが表示される（4.4節参照）。指定しない場合は単一期間の実験として今まで通り扱われる（後方互換）。
 
-#### 2.2.1. 戦略別統計メトリクス `stats_metrics/strategy` *(必須)*
+#### 2.2.1. 戦略別メトリクス学習推移 `metrics_history/strategy` *(必須)*
 
 | カラム | 必須 | 説明 |
 |---|---|---|
@@ -200,7 +200,7 @@ longshort ポートフォリオ・シードアンサンブル等の戦略ごと�
 # metric_columns: [annual_return, annual_risk, sharpe_ratio, max_drawdown]
 ```
 
-#### 2.2.2. 個別条件別統計メトリクス `stats_metrics/individual` *(optional)*
+#### 2.2.2. 個別条件別メトリクス学習推移 `metrics_history/individual` *(optional)*
 
 | カラム | 必須 | 説明 |
 |---|---|---|
@@ -314,8 +314,8 @@ saver.save_all(
     pnl_pred_position_ticker=ticker_df,         # 銘柄別時系列 (optional)
     pnl_pred_position_individual=individual_df, # 個別条件別時系列 (optional)
     pnl_pred_position_strategy=strategy_df,     # 戦略別時系列
-    stats_metrics_strategy=stats_df,            # 戦略別統計メトリクス
-    stats_metrics_individual=stats_ind_df,      # 個別条件別統計メトリクス (optional)
+    metrics_history_strategy=stats_df,            # 戦略別メトリクス学習推移
+    metrics_history_individual=stats_ind_df,      # 個別条件別メトリクス学習推移 (optional)
     params=params_dict,                         # ハイパーパラメータ (optional)
     code=code_string,                           # 実験コード文字列 (optional)
     code_filename="closed/experiment.py",       # コードのファイル名（デフォルトclosed）
@@ -332,7 +332,7 @@ saver.save_all(
 
 - 必須カラムの存在チェック
 - `pnl_pred_position` 系データ: 条件カラムの組み合わせで groupby したとき日時 index が一意であること（`period_start`/`period_end`を含めれば期間を跨いだ日時重複も許容される。2.1節参照）
-- `stats_metrics` 系データ: `non_metric_columns` で指定したカラムがすべて存在すること
+- `metrics_history` 系データ: `non_metric_columns` で指定したカラムがすべて存在すること
 
 ---
 
@@ -396,7 +396,7 @@ Streamlit による Web ダッシュボード。`exp_name` × `run_name` の組�
 
 #### 期間選択（ウォークフォワード等、`period_start`/`period_end`がある場合のみ）
 
-- `stats_metrics/strategy`（無ければ`individual`）に`period_start`/`period_end`があれば、タブ内にセレクトボックスを表示し、その一意な組み合わせを期間一覧として選べる（ラベルは`{period_start} 〜 {period_end}`、`period_start`昇順）。デフォルトは最新（最後）の期間
+- `metrics_history/strategy`（無ければ`individual`）に`period_start`/`period_end`があれば、タブ内にセレクトボックスを表示し、その一意な組み合わせを期間一覧として選べる（ラベルは`{period_start} 〜 {period_end}`、`period_start`昇順）。デフォルトは最新（最後）の期間
 - 選択した期間で、サイドバーのベストエポック判定設定（4.1節）が対象とするデータが絞り込まれる（ベストエポックは各期間に1対1で紐づくため、期間を選ばずに全期間まとめて判定すると意味を成さない）。判定設定のセレクトボックス自体はサイドバーにあり、メトリクス学習推移・戦略時系列・銘柄別時系列の全タブで共通のベストエポックとして使われる
 - 戦略時系列タブ・銘柄別時系列タブには「どの期間を表示するか」という絞り込みの概念自体が無く、常に全期間を対象に表示する（期間を跨いだ表示が目的の別タブに、本タブの期間選択を持ち込むと意味が繋がらない）。ただし各期間ごとのベストエポック（best_epoch_by_period）は共通して使い、両タブの期間ごとのエポック選択セレクトボックスのデフォルト値になる（4.5/4.6節参照）
 - `period_start`/`period_end`が無い実験では、このUI自体が表示されず、今まで通り全epochが対象になる
@@ -493,7 +493,7 @@ Streamlit による Web ダッシュボード。`exp_name` × `run_name` の組�
 
 ### 5.2. キャッシュ
 
-ダッシュボードの主要なデータ読み込み（`stats_metrics`系・`pnl_pred_position`系・メタデータ・データ型一覧）は`@st.cache_data`でキャッシュされる（TTL 24時間、キー毎最大8件のLRU）。Streamlitはウィジェット操作の度にスクリプト全体を再実行するため、無関係な操作でも毎回GCSから再ダウンロードしないようにするための措置。実験結果は保存後に更新されない運用を前提としている。
+ダッシュボードの主要なデータ読み込み（`metrics_history`系・`pnl_pred_position`系・メタデータ・データ型一覧）は`@st.cache_data`でキャッシュされる（TTL 24時間、キー毎最大8件のLRU）。Streamlitはウィジェット操作の度にスクリプト全体を再実行するため、無関係な操作でも毎回GCSから再ダウンロードしないようにするための措置。実験結果は保存後に更新されない運用を前提としている。
 
 ### 5.3. Cloud Run実行時の環境変数
 

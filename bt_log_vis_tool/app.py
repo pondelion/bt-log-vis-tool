@@ -36,13 +36,13 @@ _LOADER_HASH_FUNCS = {ExperimentLoader: lambda loader: (str(loader.base_dir), lo
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, max_entries=8, show_spinner=False, hash_funcs=_LOADER_HASH_FUNCS)
-def _load_stats_metrics_strategy(loader: ExperimentLoader) -> pd.DataFrame | None:
-    return loader.load_stats_metrics_strategy()
+def _load_metrics_history_strategy(loader: ExperimentLoader) -> pd.DataFrame | None:
+    return loader.load_metrics_history_strategy()
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, max_entries=8, show_spinner=False, hash_funcs=_LOADER_HASH_FUNCS)
-def _load_stats_metrics_individual(loader: ExperimentLoader) -> pd.DataFrame | None:
-    return loader.load_stats_metrics_individual()
+def _load_metrics_history_individual(loader: ExperimentLoader) -> pd.DataFrame | None:
+    return loader.load_metrics_history_individual()
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, max_entries=8, show_spinner=False, hash_funcs=_LOADER_HASH_FUNCS)
@@ -219,14 +219,14 @@ def _render_period_selector_in_tab(stats_df: pd.DataFrame, container) -> tuple[p
 
 
 def _compute_pnl_abs_sharpe(loader: ExperimentLoader) -> pd.DataFrame | None:
-    """pnl_pred_position/strategyの`pnl_abs`（絶対損益）から、stats_metricsと同じ
+    """pnl_pred_position/strategyの`pnl_abs`（絶対損益）から、metrics_historyと同じ
     epoch/split/strategy_name（・period_start/period_end）粒度で年率Sharpe比を算出し、
     `sharpe_ratio_abs`列を持つDataFrameを返す（stats_dfへの左結合用）。
 
-    既存のstats_metricsの`sharpe_ratio`は学習時に`pnl`（率）から計算されたもので、絶対損益
+    既存のmetrics_historyの`sharpe_ratio`は学習時に`pnl`（率）から計算されたもので、絶対損益
     ベースの評価軸を持たない。絶対損益（`pnl_abs`）を目的変数として最適化する実験
     （run0001_7等）では判定指標側もそれに揃えられないと、ベストエポック判定が実際の最適化対象と
-    ずれてしまう。stats_metrics側の再保存（学習スクリプトの再実行）無しに使えるよう、
+    ずれてしまう。metrics_history側の再保存（学習スクリプトの再実行）無しに使えるよう、
     pnl_pred_position側の生データから都度計算する。`pnl_abs`列が無ければNoneを返す。
     """
     strategy_df = _load_pnl_pred_position_strategy(loader)
@@ -247,16 +247,16 @@ def _compute_pnl_abs_sharpe(loader: ExperimentLoader) -> pd.DataFrame | None:
 
 
 def _load_stats_with_derived_metrics(loader: ExperimentLoader) -> tuple[pd.DataFrame, str, list[str], list[str]] | None:
-    """stats_metrics/strategy（無ければindividual）を読み込み、`_compute_pnl_abs_sharpe`で
+    """metrics_history/strategy（無ければindividual）を読み込み、`_compute_pnl_abs_sharpe`で
     算出した`sharpe_ratio_abs`（絶対損益ベースの年率Sharpe比）を追加でマージした上で
-    (stats_df, stats_type, non_metric_columns, metric_cols) を返す。stats_metricsデータが
-    無ければNone。stats_metrics/individualはstrategy_name粒度が無く、strategy粒度のpnl_abs由来
-    指標とは結合できないためマージ対象外（stats_metrics/strategyの場合のみ結合する）。"""
-    stats_df = _load_stats_metrics_strategy(loader)
-    stats_type = "stats_metrics/strategy"
+    (stats_df, stats_type, non_metric_columns, metric_cols) を返す。metrics_historyデータが
+    無ければNone。metrics_history/individualはstrategy_name粒度が無く、strategy粒度のpnl_abs由来
+    指標とは結合できないためマージ対象外（metrics_history/strategyの場合のみ結合する）。"""
+    stats_df = _load_metrics_history_strategy(loader)
+    stats_type = "metrics_history/strategy"
     if stats_df is None:
-        stats_df = _load_stats_metrics_individual(loader)
-        stats_type = "stats_metrics/individual"
+        stats_df = _load_metrics_history_individual(loader)
+        stats_type = "metrics_history/individual"
     if stats_df is None:
         return None
 
@@ -271,7 +271,7 @@ def _load_stats_with_derived_metrics(loader: ExperimentLoader) -> tuple[pd.DataF
     if stats_df.index.name == "epoch":
         stats_df = stats_df.reset_index(drop="epoch" in stats_df.columns)
 
-    if stats_type == "stats_metrics/strategy":
+    if stats_type == "metrics_history/strategy":
         derived_df = _compute_pnl_abs_sharpe(loader)
         if derived_df is not None:
             merge_keys = [c for c in ["period_start", "period_end", "split", "strategy_name", "epoch"] if c in stats_df.columns and c in derived_df.columns]

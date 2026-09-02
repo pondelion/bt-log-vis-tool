@@ -7,7 +7,7 @@
 ## 特徴
 
 - Pythonスクリプト（Jupyter Notebookからも利用可）からの簡単なデータ保存API
-- 実験結果の構造化保存（PnL、ポジション、統計メトリクス等）
+- 実験結果の構造化保存（PnL、ポジション、メトリクス学習推移等）
 - Streamlitベースのインタラクティブなダッシュボード
 - エポック毎のパフォーマンス追跡
 - ベストエポックの自動検出
@@ -59,7 +59,7 @@ saver = ExperimentSaver(
 # データ保存
 saver.save_all(
     pnl_pred_position_strategy=strategy_df,  # 戦略毎PnL/Pred/Position DataFrame
-    stats_metrics_strategy=stats_df,         # 戦略毎統計メトリクス DataFrame
+    metrics_history_strategy=stats_df,         # 戦略毎メトリクス学習推移 DataFrame
     params=params_dict,                      # ハイパーパラメータ辞書
     code=code_string,                        # 実験コード（文字列）
     code_filename="closed/experiment.py",    # デフォルトclosed。open/closedの詳細は仕様書参照

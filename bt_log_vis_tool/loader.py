@@ -142,21 +142,21 @@ class ExperimentLoader:
         """
         return self._load_dataframe("pnl_pred_position/strategy")
 
-    def load_stats_metrics_strategy(self) -> pd.DataFrame | None:
-        """戦略毎統計メトリクス（エポック推移）を読み込み
+    def load_metrics_history_strategy(self) -> pd.DataFrame | None:
+        """戦略毎メトリクス学習推移（エポック推移）を読み込み
 
         Returns:
-            統計メトリクス DataFrame
+            メトリクス学習推移 DataFrame
         """
-        return self._load_dataframe("stats_metrics/strategy")
+        return self._load_dataframe("metrics_history/strategy")
 
-    def load_stats_metrics_individual(self) -> pd.DataFrame | None:
-        """個別条件毎統計メトリクス（エポック推移）を読み込み
+    def load_metrics_history_individual(self) -> pd.DataFrame | None:
+        """個別条件毎メトリクス学習推移（エポック推移）を読み込み
 
         Returns:
-            統計メトリクス DataFrame
+            メトリクス学習推移 DataFrame
         """
-        return self._load_dataframe("stats_metrics/individual")
+        return self._load_dataframe("metrics_history/individual")
 
     def load_params(self, filename: str, can_view_closed: bool = False) -> dict | None:
         """ハイパーパラメータを読み込み
@@ -298,8 +298,8 @@ class ExperimentLoader:
             "pnl_pred_position/ticker",
             "pnl_pred_position/individual",
             "pnl_pred_position/strategy",
-            "stats_metrics/strategy",
-            "stats_metrics/individual",
+            "metrics_history/strategy",
+            "metrics_history/individual",
         ]:
             if self._get_data_path(data_type).exists():
                 data_types.append(data_type)

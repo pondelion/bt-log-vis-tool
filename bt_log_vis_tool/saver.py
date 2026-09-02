@@ -35,9 +35,9 @@ class ExperimentSaver:
     REQUIRED_COLUMNS_INDIVIDUAL = ["split", "epoch"]
     REQUIRED_COLUMNS_STRATEGY = ["split", "epoch", "strategy_name"]
 
-    # 統計メトリクスの必須条件カラム
-    REQUIRED_STATS_COLUMNS_STRATEGY = ["split", "epoch", "strategy_name"]
-    REQUIRED_STATS_COLUMNS_INDIVIDUAL = ["split", "epoch"]
+    # メトリクス学習推移の必須条件カラム
+    REQUIRED_METRICS_HISTORY_COLUMNS_STRATEGY = ["split", "epoch", "strategy_name"]
+    REQUIRED_METRICS_HISTORY_COLUMNS_INDIVIDUAL = ["split", "epoch"]
 
     # ウォークフォワード等、複数期間を区別するための任意カラム（両方揃えて指定する。片方だけは不可）
     PERIOD_START_COLUMN = "period_start"
@@ -48,17 +48,17 @@ class ExperimentSaver:
         base_dir: str | Path,
         exp_name: str,
         run_name: str,
-        non_metric_columns_stats_strategy: list[str] | None = None,
-        non_metric_columns_stats_individual: list[str] | None = None,
+        non_metric_columns_metrics_history_strategy: list[str] | None = None,
+        non_metric_columns_metrics_history_individual: list[str] | None = None,
     ):
         """
         Args:
             base_dir: 保存先のベースディレクトリ
             exp_name: 実験名（ノートブック単位）
             run_name: ラン名（ノートブック内の各実験）
-            non_metric_columns_stats_strategy: 戦略毎統計メトリクスの非メトリックカラム
+            non_metric_columns_metrics_history_strategy: 戦略毎メトリクス学習推移の非メトリックカラム
                                               指定しない場合は["split", "epoch", "strategy_name"]
-            non_metric_columns_stats_individual: 個別条件毎統計メトリクスの非メトリックカラム
+            non_metric_columns_metrics_history_individual: 個別条件毎メトリクス学習推移の非メトリックカラム
                                                 指定しない場合は["split", "epoch"]
         """
         self.base_dir = Path(base_dir).expanduser()
@@ -66,22 +66,22 @@ class ExperimentSaver:
         self.run_name = run_name
         self.run_dir = self.base_dir / exp_name / run_name
 
-        # 戦略毎統計メトリクスのnon_metric_columns設定
-        if non_metric_columns_stats_strategy is None:
-            self.non_metric_columns_stats_strategy = self.REQUIRED_STATS_COLUMNS_STRATEGY.copy()
+        # 戦略毎メトリクス学習推移のnon_metric_columns設定
+        if non_metric_columns_metrics_history_strategy is None:
+            self.non_metric_columns_metrics_history_strategy = self.REQUIRED_METRICS_HISTORY_COLUMNS_STRATEGY.copy()
         else:
             # 必須カラムを含める
-            self.non_metric_columns_stats_strategy = list(
-                set(non_metric_columns_stats_strategy) | set(self.REQUIRED_STATS_COLUMNS_STRATEGY)
+            self.non_metric_columns_metrics_history_strategy = list(
+                set(non_metric_columns_metrics_history_strategy) | set(self.REQUIRED_METRICS_HISTORY_COLUMNS_STRATEGY)
             )
 
-        # 個別条件毎統計メトリクスのnon_metric_columns設定
-        if non_metric_columns_stats_individual is None:
-            self.non_metric_columns_stats_individual = self.REQUIRED_STATS_COLUMNS_INDIVIDUAL.copy()
+        # 個別条件毎メトリクス学習推移のnon_metric_columns設定
+        if non_metric_columns_metrics_history_individual is None:
+            self.non_metric_columns_metrics_history_individual = self.REQUIRED_METRICS_HISTORY_COLUMNS_INDIVIDUAL.copy()
         else:
             # 必須カラムを含める
-            self.non_metric_columns_stats_individual = list(
-                set(non_metric_columns_stats_individual) | set(self.REQUIRED_STATS_COLUMNS_INDIVIDUAL)
+            self.non_metric_columns_metrics_history_individual = list(
+                set(non_metric_columns_metrics_history_individual) | set(self.REQUIRED_METRICS_HISTORY_COLUMNS_INDIVIDUAL)
             )
 
     def _get_data_dir(self, data_type: str) -> Path:
@@ -210,11 +210,11 @@ class ExperimentSaver:
 
         print(f"Saved meta: {meta_path}")
 
-    def _save_stats_meta(self, df: pd.DataFrame, data_type: str, non_metric_columns: list[str]) -> None:
-        """統計メトリクス用メタデータを保存
+    def _save_metrics_history_meta(self, df: pd.DataFrame, data_type: str, non_metric_columns: list[str]) -> None:
+        """メトリクス学習推移用メタデータを保存
 
         Args:
-            df: 統計メトリクスDataFrame
+            df: メトリクス学習推移DataFrame
             data_type: データタイプ
             non_metric_columns: 非メトリックカラムのリスト
         """
@@ -277,11 +277,11 @@ class ExperimentSaver:
         self._save_dataframe(df, data_type)
         self._save_meta(df, data_type)
 
-    def _validate_stats_metrics(self, df: pd.DataFrame, data_type: str, non_metric_columns: list[str]) -> None:
-        """統計メトリクスのバリデーション
+    def _validate_metrics_history(self, df: pd.DataFrame, data_type: str, non_metric_columns: list[str]) -> None:
+        """メトリクス学習推移のバリデーション
 
         Args:
-            df: 統計メトリクスDataFrame
+            df: メトリクス学習推移DataFrame
             data_type: データタイプ
             non_metric_columns: 非メトリックカラムのリスト
 
@@ -309,7 +309,7 @@ class ExperimentSaver:
     def _resolve_non_metric_columns(self, df: pd.DataFrame, non_metric_columns: list[str]) -> list[str]:
         """non_metric_columnsに、dfに存在するならperiod_start/period_endを自動的に加える。
 
-        呼び出し側がnon_metric_columns_stats_*を明示的に更新しなくても、
+        呼び出し側がnon_metric_columns_metrics_history_*を明示的に更新しなくても、
         period_start/period_endがmetric_columns（実際のメトリクス）として誤分類されないようにする。
         """
         resolved = list(non_metric_columns)
@@ -331,38 +331,38 @@ class ExperimentSaver:
         metric_columns = [col for col in df.columns if col not in non_metric_columns]
         return metric_columns
 
-    def save_stats_metrics_strategy(self, df: pd.DataFrame) -> None:
-        """戦略毎統計メトリクス（エポック推移）を保存
+    def save_metrics_history_strategy(self, df: pd.DataFrame) -> None:
+        """戦略毎メトリクス学習推移（エポック推移）を保存
 
         Args:
-            df: 統計メトリクスデータフレーム
+            df: メトリクス学習推移データフレーム
                 - index: epoch
                 - 必須カラム: split, epoch, strategy_name
                 - 任意カラム: period_start, period_end（ウォークフォワード等、複数期間を区別する場合。
                   両方揃えて指定すること。epoch番号は期間毎に1から振り直してよい）
                 - その他: メトリック名（任意）+ 任意条件カラム
         """
-        data_type = "stats_metrics/strategy"
-        non_metric_columns = self._resolve_non_metric_columns(df, self.non_metric_columns_stats_strategy)
-        self._validate_stats_metrics(df, data_type, non_metric_columns)
+        data_type = "metrics_history/strategy"
+        non_metric_columns = self._resolve_non_metric_columns(df, self.non_metric_columns_metrics_history_strategy)
+        self._validate_metrics_history(df, data_type, non_metric_columns)
         self._save_dataframe(df, data_type)
-        self._save_stats_meta(df, data_type, non_metric_columns)
+        self._save_metrics_history_meta(df, data_type, non_metric_columns)
 
-    def save_stats_metrics_individual(self, df: pd.DataFrame) -> None:
-        """個別条件毎統計メトリクス（エポック推移）を保存
+    def save_metrics_history_individual(self, df: pd.DataFrame) -> None:
+        """個別条件毎メトリクス学習推移（エポック推移）を保存
 
         Args:
-            df: 統計メトリクスデータフレーム
+            df: メトリクス学習推移データフレーム
                 - index: epoch
                 - 必須カラム: split, epoch
-                - 任意カラム: period_start, period_end（save_stats_metrics_strategy参照）
+                - 任意カラム: period_start, period_end（save_metrics_history_strategy参照）
                 - その他: メトリック名（任意）+ 任意条件カラム（model_id, random_seed等）
         """
-        data_type = "stats_metrics/individual"
-        non_metric_columns = self._resolve_non_metric_columns(df, self.non_metric_columns_stats_individual)
-        self._validate_stats_metrics(df, data_type, non_metric_columns)
+        data_type = "metrics_history/individual"
+        non_metric_columns = self._resolve_non_metric_columns(df, self.non_metric_columns_metrics_history_individual)
+        self._validate_metrics_history(df, data_type, non_metric_columns)
         self._save_dataframe(df, data_type)
-        self._save_stats_meta(df, data_type, non_metric_columns)
+        self._save_metrics_history_meta(df, data_type, non_metric_columns)
 
     def _save_text_file(self, category: str, content: str, filename: str) -> None:
         """指定カテゴリ配下にテキストファイルを保存
@@ -423,8 +423,8 @@ class ExperimentSaver:
         pnl_pred_position_ticker: pd.DataFrame | None = None,
         pnl_pred_position_individual: pd.DataFrame | None = None,
         pnl_pred_position_strategy: pd.DataFrame | None = None,
-        stats_metrics_strategy: pd.DataFrame | None = None,
-        stats_metrics_individual: pd.DataFrame | None = None,
+        metrics_history_strategy: pd.DataFrame | None = None,
+        metrics_history_individual: pd.DataFrame | None = None,
         params: dict[str, Any] | None = None,
         code: str | None = None,
         code_filename: str = "closed/experiment.py",
@@ -437,8 +437,8 @@ class ExperimentSaver:
             pnl_pred_position_ticker: 銘柄毎データ
             pnl_pred_position_individual: 個別条件毎データ
             pnl_pred_position_strategy: 戦略毎データ
-            stats_metrics_strategy: 戦略毎統計メトリクス
-            stats_metrics_individual: 個別条件毎統計メトリクス
+            metrics_history_strategy: 戦略毎メトリクス学習推移
+            metrics_history_individual: 個別条件毎メトリクス学習推移
             params: ハイパーパラメータ
             code: 実験コード
             code_filename: コードのファイル名
@@ -454,11 +454,11 @@ class ExperimentSaver:
         if pnl_pred_position_strategy is not None:
             self.save_pnl_pred_position_strategy(pnl_pred_position_strategy)
 
-        if stats_metrics_strategy is not None:
-            self.save_stats_metrics_strategy(stats_metrics_strategy)
+        if metrics_history_strategy is not None:
+            self.save_metrics_history_strategy(metrics_history_strategy)
 
-        if stats_metrics_individual is not None:
-            self.save_stats_metrics_individual(stats_metrics_individual)
+        if metrics_history_individual is not None:
+            self.save_metrics_history_individual(metrics_history_individual)
 
         if params is not None:
             self.save_params(params)

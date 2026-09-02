@@ -140,7 +140,7 @@ def main():
     # 全データを一括保存
     saver.save_all(
         pnl_pred_position_strategy=pnl_pred_position_strategy_df,
-        stats_metrics_strategy=stats_strategy_df,
+        metrics_history_strategy=stats_strategy_df,
         params=params,
         code=code,
         code_filename="experiment.py",
