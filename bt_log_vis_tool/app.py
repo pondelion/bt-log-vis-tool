@@ -895,6 +895,7 @@ def render_timeseries_tab(
                                 fig.add_trace(
                                     go.Scatter(x=x, y=y, mode="lines", name=f"{label}{period_label}", line=dict(color=colors[j % len(colors)]))
                                 )
+                        _add_period_boundary_lines(fig, cash_df)
                         fig.update_layout(
                             title=f"必要資金 ({split})", xaxis_title="日時", yaxis_title="必要資金", hovermode="x unified", height=400, margin=dict(t=40, b=40)
                         )
@@ -937,6 +938,23 @@ def _build_period_traces(entity_df: pd.DataFrame, split: str | None, value_colum
         label = f" [{pd.Timestamp(p_start).date()}〜]" if multiple else ""
         traces.append((p_df.index, y, label))
     return traces
+
+
+def _add_period_boundary_lines(fig: go.Figure, split_data: pd.DataFrame) -> None:
+    """period_start/period_end列がある場合、モデル切り替わり位置（2期間目以降それぞれの最初の
+    日付）に縦線を引く。splitがtestの場合は複数期間が日付順に連結されて1本のトレースとして
+    描画される（_build_period_traces参照）ため、どこで学習済みモデルが切り替わっているかが
+    見た目では分からなくなる。先頭期間の開始日は「切り替わり」ではないので線を引かない"""
+    has_period = "period_start" in split_data.columns and "period_end" in split_data.columns
+    if not has_period:
+        return
+    boundaries = sorted({p_df.index.min() for _, p_df in split_data.groupby("period_start") if len(p_df) > 0})
+    for boundary in boundaries[1:]:
+        fig.add_shape(
+            type="line",
+            x0=boundary, x1=boundary, y0=0, y1=1, yref="paper",
+            line=dict(color="gray", dash="dot", width=1),
+        )
 
 
 def _compute_required_cash_df(ticker_split_df: pd.DataFrame, window: int) -> pd.DataFrame:
@@ -1021,6 +1039,8 @@ def render_equity_curve(df, epoch, condition_columns, pnl_column: str = "pnl", c
                     )
                 )
 
+        _add_period_boundary_lines(fig, split_data)
+
         fig.update_layout(
             title=f"{chart_title} ({split}) - エポック {epoch}",
             xaxis_title="日時",
@@ -1071,6 +1091,8 @@ def render_position(df, epoch, condition_columns, cumsum: bool = False):
                     )
                 )
 
+        _add_period_boundary_lines(fig, split_data)
+
         fig.update_layout(
             title=f"{ylabel} ({split}) - エポック {epoch}",
             xaxis_title="日時",
@@ -1104,6 +1126,7 @@ def render_ticker_equity_curve(epoch_df, display_splits, selected_tickers, color
                         legendgroup=ticker,
                         line=dict(color=colors[j % len(colors)]),
                     ))
+            _add_period_boundary_lines(fig, split_df)
             fig.update_layout(
                 title=f"{chart_title} ({split})" if split else chart_title,
                 xaxis_title="日時",
@@ -1254,6 +1277,7 @@ def render_ticker_tab(loader: ExperimentLoader, best_epoch: int | None, best_epo
                             legendgroup=ticker,
                             line=dict(color=colors[j % len(colors)]),
                         ))
+                _add_period_boundary_lines(fig, split_df)
                 pos_ylabel = "ポジション累積" if ticker_pos_cumsum else "ポジション"
                 pos_title = f"{pos_ylabel} ({split})" if split else pos_ylabel
                 fig.update_layout(
@@ -1285,6 +1309,7 @@ def render_ticker_tab(loader: ExperimentLoader, best_epoch: int | None, best_epo
                             legendgroup=ticker,
                             line=dict(color=colors[j % len(colors)]),
                         ))
+                _add_period_boundary_lines(fig, split_df)
                 fig.update_layout(
                     title=f"予測値 ({split})" if split else "予測値",
                     xaxis_title="日時",
