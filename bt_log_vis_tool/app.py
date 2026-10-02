@@ -1167,6 +1167,15 @@ def render_ticker_tab(loader: ExperimentLoader, best_epoch: int | None, best_epo
     value_columns = meta.get("value_columns", [])
     best_epoch_by_period = best_epoch_by_period or {}
 
+    # 戦略選択（サイドバーの「判定 strategy」と同じ既定選択ロジック）。strategy_nameはticker_df
+    # 自身の条件カラムなので、単にユニーク値をプルダウンにしてfilter_by_conditionsで絞り込むだけでよい
+    # （仕様書2.1.1節「銘柄別時系列」参照）
+    if "strategy_name" in condition_columns:
+        strategies = sorted(ticker_df["strategy_name"].unique().tolist())
+        default_strategy_idx = strategies.index("long_short") if "long_short" in strategies else 0
+        selected_strategy = st.selectbox("戦略", strategies, index=default_strategy_idx, key="ticker_strategy_select")
+        ticker_df = filter_by_conditions(ticker_df, strategy_name=selected_strategy)
+
     has_period = "period_start" in ticker_df.columns and "period_end" in ticker_df.columns
 
     if has_period and "epoch" in condition_columns:
