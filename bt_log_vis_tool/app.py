@@ -285,8 +285,12 @@ def _load_stats_with_derived_metrics(loader: ExperimentLoader) -> tuple[pd.DataF
 
 def _setup_best_epoch_sidebar(loader: ExperimentLoader, period_container) -> tuple[int | None, tuple | None, dict]:
     """メトリクス学習推移タブ内の期間選択（該当する場合）と、サイドバーのベストエポック判定設定
-    （判定 split/メトリクス/strategy。全タブ共通）から (best_epoch, selected_period, best_epoch_by_period)
-    を算出する。
+    （全タブ共通）から (best_epoch, selected_period, best_epoch_by_period) を算出する。
+
+    判定設定には「オート」（判定 split/メトリクス/strategyの組み合わせで指標最大のepochを選ぶ、
+    従来通りの挙動。「判定対象の最低epoch」でこれより前のepochを選定対象から除外できる。
+    初期epochは少数サンプルゆえのノイズで指標が偶然高く出ることがあるため）と「固定エポック」
+    （期間によらず常に同じepoch番号を使う）の2モードがあり、モード自体もサイドバーで選択する。
 
     Returns:
         best_epoch: メトリクス学習推移タブで選択中の期間（該当する場合）のベストエポック
@@ -308,6 +312,7 @@ def _setup_best_epoch_sidebar(loader: ExperimentLoader, period_container) -> tup
     has_strategy = "strategy_name" in non_metric_columns and "strategy_name" in full_stats_df.columns
     splits = sort_splits(full_stats_df["split"].unique().tolist()) if "split" in full_stats_df.columns else []
     strategies = sorted(full_stats_df["strategy_name"].unique().tolist()) if has_strategy else []
+    available_epochs = sorted(full_stats_df["epoch"].unique().tolist()) if "epoch" in full_stats_df.columns else []
 
     if not splits or not metric_cols:
         return None, selected_period, {}
@@ -316,27 +321,45 @@ def _setup_best_epoch_sidebar(loader: ExperimentLoader, period_container) -> tup
         st.markdown("---")
         st.subheader("ベストエポック判定設定")
 
-        default_split_idx = splits.index("val") if "val" in splits else 0
-        best_split = st.selectbox("判定 split", splits, index=default_split_idx, key="best_split")
+        mode = st.radio("モード", ["オート", "固定エポック"], index=0, key="best_epoch_mode", horizontal=True)
 
-        sharpe_cols = [c for c in metric_cols if "sharpe" in c.lower()]
-        default_metric = sharpe_cols[0] if sharpe_cols else metric_cols[0]
-        best_metric = st.selectbox(
-            "判定 メトリクス", metric_cols, index=metric_cols.index(default_metric), key="best_metric"
-        )
-
-        if has_strategy:
-            default_strategy_idx = strategies.index("long_short") if "long_short" in strategies else 0
-            best_strategy = st.selectbox("判定 strategy", strategies, index=default_strategy_idx, key="best_strategy")
+        if mode == "固定エポック":
+            if available_epochs:
+                fixed_epoch = st.selectbox("固定エポック", available_epochs, index=len(available_epochs) - 1, key="fixed_epoch")
+            else:
+                st.warning("エポックが見つかりません")
+                fixed_epoch = None
         else:
-            best_strategy = None
+            default_split_idx = splits.index("val") if "val" in splits else 0
+            best_split = st.selectbox("判定 split", splits, index=default_split_idx, key="best_split")
+
+            sharpe_cols = [c for c in metric_cols if "sharpe" in c.lower()]
+            default_metric = sharpe_cols[0] if sharpe_cols else metric_cols[0]
+            best_metric = st.selectbox(
+                "判定 メトリクス", metric_cols, index=metric_cols.index(default_metric), key="best_metric"
+            )
+
+            if has_strategy:
+                default_strategy_idx = strategies.index("long_short") if "long_short" in strategies else 0
+                best_strategy = st.selectbox("判定 strategy", strategies, index=default_strategy_idx, key="best_strategy")
+            else:
+                best_strategy = None
+
+            # 初期epochは少数サンプルゆえのノイズでメトリクスが偶然高く出ることがあるため、
+            # これより前のepochは最良epoch選定の対象から除外できるようにする
+            # （デフォルト1=従来通り全epochを対象、絞り込みなし）
+            min_epoch = st.selectbox("判定対象の最低epoch", available_epochs, index=0, key="best_epoch_min") if available_epochs else None
 
     def _compute_best_epoch(df: pd.DataFrame) -> int | None:
+        if mode == "固定エポック":
+            return fixed_epoch
         if "epoch" not in df.columns:
             return None
         filtered = filter_by_conditions(df, split=best_split)
         if has_strategy and best_strategy:
             filtered = filter_by_conditions(filtered, strategy_name=best_strategy)
+        if min_epoch is not None:
+            filtered = filtered[filtered["epoch"] >= min_epoch]
         if len(filtered) == 0:
             return None
         epoch_means = filtered.groupby("epoch")[best_metric].mean()
