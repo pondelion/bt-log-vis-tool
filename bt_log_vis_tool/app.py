@@ -850,21 +850,32 @@ def render_timeseries_tab(
             return
         epoch_data = epoch_data[epoch_data["split"].isin(selected_splits)]
 
+    # 戦略選択（銘柄別時系列タブの「表示するTicker」と同じ方式。デフォルトは全選択）
+    selected_strategies = None
+    if "strategy_name" in condition_columns and "strategy_name" in epoch_data.columns:
+        strategies_all = sorted(epoch_data["strategy_name"].unique().tolist())
+        selected_strategies = st.multiselect("表示する戦略", strategies_all, default=strategies_all, key="ts_strategy_select")
+        if not selected_strategies:
+            st.info("表示する戦略を選択してください")
+            return
+
     # 資産曲線の描画
     if "pnl" in value_columns:
         st.markdown("### 資産曲線（累積リターン）")
-        render_equity_curve(epoch_data, epoch, condition_columns)
+        render_equity_curve(epoch_data, epoch, condition_columns, selected_strategies=selected_strategies)
 
     # 絶対損益の描画
     if "pnl_abs" in value_columns:
         st.markdown("### 資産曲線（累積損益・絶対値）")
-        render_equity_curve(epoch_data, epoch, condition_columns, pnl_column="pnl_abs", chart_title="累積損益(絶対値)")
+        render_equity_curve(
+            epoch_data, epoch, condition_columns, pnl_column="pnl_abs", chart_title="累積損益(絶対値)", selected_strategies=selected_strategies
+        )
 
     # ポジションの描画
     if "position" in value_columns:
         st.markdown("### ポジション時系列")
         pos_cumsum = st.checkbox("cumsum表示", value=True, key="strategy_pos_cumsum")
-        render_position(epoch_data, epoch, condition_columns, cumsum=pos_cumsum)
+        render_position(epoch_data, epoch, condition_columns, cumsum=pos_cumsum, selected_strategies=selected_strategies)
 
     # 必要資金・利益率（pnl_pred_position/ticker の entry_price と、paramsの
     # target_horizon/backtest_entry_interval_days（仕様書2.5.1節）が両方揃う場合のみ表示）
@@ -1020,7 +1031,7 @@ def _compute_required_cash_df(ticker_split_df: pd.DataFrame, window: int) -> pd.
     return pd.concat(frames) if frames else pd.DataFrame(columns=["long_cash", "short_cash", "gross_cash"])
 
 
-def render_equity_curve(df, epoch, condition_columns, pnl_column: str = "pnl", chart_title: str = "累積PnL"):
+def render_equity_curve(df, epoch, condition_columns, pnl_column: str = "pnl", chart_title: str = "累積PnL", selected_strategies: list | None = None):
     """資産曲線を描画（split毎に列を分けてy軸スケールを独立させる）
 
     Args:
@@ -1029,6 +1040,8 @@ def render_equity_curve(df, epoch, condition_columns, pnl_column: str = "pnl", c
         condition_columns: 条件カラムのリスト
         pnl_column: 累積対象のカラム名（"pnl"=率、"pnl_abs"=絶対損益）
         chart_title: グラフタイトルに使う名称
+        selected_strategies: 描画対象のstrategy_nameのリスト（Noneの場合は全件。呼び出し側の
+            「表示する戦略」マルチセレクトの選択結果を渡す。銘柄別時系列タブのselected_tickersと同じ方式）
 
     period_start/period_end列がある場合、test以外のsplitは期間毎に別トレースとして重ねて表示し、
     testは期間を跨いで連結してから単一トレースでcumsumする。
@@ -1037,8 +1050,8 @@ def render_equity_curve(df, epoch, condition_columns, pnl_column: str = "pnl", c
         st.warning("strategy_nameカラムが見つかりません")
         return
 
-    # strategy_name毎にグループ化
-    strategies = df["strategy_name"].unique()
+    # strategy_name毎にグループ化（selected_strategiesが指定されていればその銘柄だけに絞る）
+    strategies = selected_strategies if selected_strategies is not None else df["strategy_name"].unique()
     splits = sort_splits(df["split"].unique().tolist()) if "split" in df.columns else ["all"]
     colors = px.colors.qualitative.Plotly
 
@@ -1075,11 +1088,13 @@ def render_equity_curve(df, epoch, condition_columns, pnl_column: str = "pnl", c
             st.plotly_chart(fig, use_container_width=True)
 
 
-def render_position(df, epoch, condition_columns, cumsum: bool = False):
+def render_position(df, epoch, condition_columns, cumsum: bool = False, selected_strategies: list | None = None):
     """ポジション時系列を描画（split毎に列を分けてy軸スケールを独立させる）
 
     period_start/period_end列がある場合、test以外のsplitは期間毎に別トレースとして重ねて表示し、
     testは期間を跨いで連結してから単一トレースにする。
+
+    selected_strategies: 描画対象のstrategy_nameのリスト（Noneの場合は全件。render_equity_curveと同じ方式）
     """
     if "strategy_name" not in condition_columns:
         st.warning("strategy_nameカラムが見つかりません")
@@ -1089,7 +1104,7 @@ def render_position(df, epoch, condition_columns, cumsum: bool = False):
         st.info("positionカラムが存在しません")
         return
 
-    strategies = df["strategy_name"].unique()
+    strategies = selected_strategies if selected_strategies is not None else df["strategy_name"].unique()
     splits = sort_splits(df["split"].unique().tolist()) if "split" in df.columns else ["all"]
     colors = px.colors.qualitative.Plotly
     ylabel = "ポジション累積" if cumsum else "ポジション"
